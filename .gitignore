@@ -1,0 +1,15 @@
+# Compilación y artefactos de Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Enlaces simbólicos y librerías auxiliares locales
+.cargo/lib/
+
+# Archivos del sistema y editores
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

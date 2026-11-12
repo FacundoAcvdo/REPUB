@@ -1,0 +1,3 @@
+pub fn mock_sample_text() -> &'static str {
+    "La luz declinaba suavemente sobre la orilla, extendiendo un manto de sombras largas que se perdían entre las piedras pulidas por la marea. A lo lejos, la silueta del faro comenzaba a destellar con su pulso mecánico y calmo, un latido de fuego blanco en medio de la penumbra creciente.\n\nNo había prisa en el aire; sólo la cadencia monótona de las olas rompiendo contra el espigón y el murmullo lejano de un viento que traía consigo el aroma a salitre y a maderas viejas. En momentos así, la lectura dejaba de ser un mero ejercicio de contemplación para convertirse en un refugio impenetrable, donde cada palabra escrita resonaba como un eco antiguo recuperado del olvido."
+}

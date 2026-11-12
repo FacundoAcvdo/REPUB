@@ -1,0 +1,8 @@
+[package]
+name = "epub-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+epub-core = { path = "../core" }
+gpui-kit = "0.7"
