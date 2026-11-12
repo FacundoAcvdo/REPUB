@@ -272,7 +272,7 @@ impl Render for GalleryView {
                                     .flex_row()
                                     .items_center()
                                     .gap(px(8.0))
-                                    .children([100, 90, 80, 70, 60].into_iter().map(|pct| {
+                                    .children([100, 80, 60, 40, 20].into_iter().map(|pct| {
                                         let alpha = pct as f32 / 100.0;
                                         let is_active = (window_opacity * 100.0).round() as u32 == pct;
                                         div()

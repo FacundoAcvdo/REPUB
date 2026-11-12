@@ -72,7 +72,7 @@ impl ThemeState {
 
     pub fn update_window_opacity(cx: &mut App, opacity: f32) {
         let mut state = cx.global::<Self>().clone();
-        state.window_opacity = opacity.clamp(0.4, 1.0);
+        state.window_opacity = opacity.clamp(0.1, 1.0);
         state.sync_with_gpui(cx);
         cx.set_global(state);
     }

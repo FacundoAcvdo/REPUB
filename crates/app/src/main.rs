@@ -3,93 +3,66 @@ pub mod i18n;
 pub mod theme;
 pub mod views;
 
-use gpui_kit::base::StyledExt as _;
 use gpui_kit::*;
 
+use crate::components::sidebar::NavDestination;
 use crate::theme::init_theme;
 use crate::theme::state::ThemeState;
-use crate::views::GalleryView;
+use crate::views::ShellView;
 
-actions!(app, [ToggleGallery]);
-
-pub enum ActiveView {
-    Gallery(Entity<GalleryView>),
-    Welcome,
-}
+actions!(app, [ToggleSidebar, OpenGallery]);
 
 pub struct AppRoot {
-    active_view: ActiveView,
+    shell: Entity<ShellView>,
 }
 
 impl AppRoot {
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let gallery = cx.new(|_| GalleryView::new());
-        Self {
-            active_view: ActiveView::Gallery(gallery),
-        }
-    }
-
-    pub fn toggle_gallery(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        match &self.active_view {
-            ActiveView::Gallery(_) => {
-                self.active_view = ActiveView::Welcome;
-            }
-            ActiveView::Welcome => {
-                let gallery = cx.new(|_| GalleryView::new());
-                self.active_view = ActiveView::Gallery(gallery);
-            }
-        }
-        cx.notify();
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let shell = cx.new(|cx| ShellView::new(window, cx));
+        Self { shell }
     }
 }
 
 impl Render for AppRoot {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme_state = ThemeState::global(cx);
-        let tokens = theme_state.tokens();
+        let shell = self.shell.clone();
 
         div()
             .flex()
             .size_full()
             .bg(theme_state.window_bg())
-            .text_color(tokens.text)
-            .on_action(cx.listener(|this, _: &ToggleGallery, window, cx| {
-                this.toggle_gallery(window, cx);
-            }))
-            .child(match &self.active_view {
-                ActiveView::Gallery(gallery) => gallery.clone().into_any_element(),
-                ActiveView::Welcome => div()
-                    .flex()
-                    .flex_col()
-                    .size_full()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(16.0))
-                    .child(
-                        div()
-                            .text_2xl()
-                            .font_bold()
-                            .child("EPUB Reader Desktop - Hito 1"),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(tokens.text_muted)
-                            .child("Presiona Ctrl + Shift + G para volver a la Galería de Diseño"),
-                    )
-                    .into_any_element(),
+            .on_action({
+                let shell = shell.clone();
+                move |_: &ToggleSidebar, _, cx| {
+                    shell.update(cx, |this, cx| {
+                        this.toggle_sidebar(cx);
+                    });
+                }
             })
+            .on_action({
+                let shell = shell.clone();
+                move |_: &OpenGallery, _, cx| {
+                    shell.update(cx, |this, cx| {
+                        this.navigate_to(NavDestination::Gallery, cx);
+                    });
+                }
+            })
+            .child(shell)
     }
 }
 
 fn main() {
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(gpui_kit::assets::AllAssets)
         .run(|cx| {
             gpui_kit::init(cx);
             init_theme(cx);
 
-            cx.bind_keys([KeyBinding::new("ctrl-shift-g", ToggleGallery, None)]);
+            cx.bind_keys([
+                KeyBinding::new("ctrl-shift-g", OpenGallery, None),
+                KeyBinding::new("ctrl-b", ToggleSidebar, None),
+            ]);
 
             gpui_kit::open_window(
                 WindowOptions {
@@ -99,7 +72,7 @@ fn main() {
                         cx,
                     ))),
                     titlebar: Some(TitlebarOptions {
-                        title: Some("EPUB Reader - Galería de Diseño".into()),
+                        title: Some("EPUB Reader".into()),
                         ..Default::default()
                     }),
                     window_background: WindowBackgroundAppearance::Transparent,
