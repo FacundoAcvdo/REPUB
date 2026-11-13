@@ -1465,6 +1465,8 @@ version = "0.1.0"
 dependencies = [
  "epub-core",
  "gpui-kit",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

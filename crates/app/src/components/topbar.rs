@@ -172,25 +172,11 @@ impl RenderOnce for TopBar {
                     .text_color(tokens.text)
                     .child(self.title),
             )
-            // Right: Status indicator or dev badge
+            // Right: Balanced spacer so title stays centered
             .child(
                 div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .px(px(8.0))
-                            .py(px(2.0))
-                            .rounded_full()
-                            .bg(tokens.bg_sunken)
-                            .border_1()
-                            .border_color(tokens.border)
-                            .text_xs()
-                            .text_color(tokens.text_muted)
-                            .child("Hito 2: Shell"),
-                    ),
+                    .w(px(98.0))
+                    .h(px(30.0)),
             )
     }
 }

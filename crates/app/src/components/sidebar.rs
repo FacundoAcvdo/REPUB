@@ -169,13 +169,12 @@ impl RenderOnce for Sidebar {
             .h_full()
             .flex()
             .flex_col()
-            .justify_between()
             .when(is_open, |s| s.w(px(195.0)).p(px(10.0)))
             .when(!is_open, |s| s.w(px(0.0)).overflow_hidden().p(px(0.0)))
             .bg(rgba(0x0000001f))
             .border_r_1()
             .border_color(tokens.border)
-            // Top Navigation Items
+            // Navigation Items
             .child(
                 div()
                     .w_full()
@@ -185,15 +184,6 @@ impl RenderOnce for Sidebar {
                     .child(make_item(NavDestination::Home, IconName::LayoutDashboard, "Inicio"))
                     .child(make_item(NavDestination::Library, IconName::BookOpen, "Biblioteca"))
                     .child(make_item(NavDestination::Settings, IconName::Settings, "Ajustes")),
-            )
-            // Bottom Item: Galería (Dev)
-            .child(
-                div()
-                    .w_full()
-                    .pt(px(10.0))
-                    .border_t_1()
-                    .border_color(tokens.border_subtle)
-                    .child(make_item(NavDestination::Gallery, IconName::Palette, "Galería (Dev)")),
             )
     }
 }

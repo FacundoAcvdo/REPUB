@@ -120,6 +120,13 @@ impl ShellView {
         }
     }
 
+    pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_to(NavDestination::Library, cx);
+        self.library_view.update(cx, |lib, cx| {
+            lib.focus_search(window, cx);
+        });
+    }
+
     pub fn title_for_dest(&self) -> &'static str {
         match self.current_dest {
             NavDestination::Home => "Inicio",

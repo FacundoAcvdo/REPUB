@@ -8,7 +8,36 @@ impl I18n {
     pub const NAV_HOME: &'static str = "Inicio";
     pub const NAV_LIBRARY: &'static str = "Biblioteca";
     pub const NAV_SETTINGS: &'static str = "Ajustes";
-    pub const NAV_GALLERY: &'static str = "Galería (Dev)";
+    pub const NAV_GALLERY: &'static str = "Galería de Componentes";
+    pub const NAV_READER: &'static str = "Lector";
+
+    // Home view
+    pub const HOME_TITLE: &'static str = "Inicio";
+    pub const HOME_SUBTITLE: &'static str = "Bienvenido de nuevo. Tu biblioteca personal y métricas de lectura al día.";
+    pub const HOME_CONTINUE_READING: &'static str = "CONTINUAR LEYENDO";
+    pub const HOME_RESUME_BTN: &'static str = "Reanudar lectura";
+    pub const HOME_STATS_TITLE: &'static str = "ESTADÍSTICAS GENERALES";
+    pub const HOME_ACTIVITY_TITLE: &'static str = "ACTIVIDAD SEMANAL";
+    pub const HOME_DAYS: [&'static str; 7] = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+
+    // Library view
+    pub const LIBRARY_TITLE: &'static str = "Biblioteca";
+    pub const LIBRARY_SEARCH_PLACEHOLDER: &'static str = "Buscar por título, autor o género...";
+    pub const LIBRARY_IMPORT_HINT: &'static str = "Importar EPUB estará disponible en la siguiente fase.";
+    pub const LIBRARY_EMPTY: &'static str = "No se encontraron libros que coincidan con la búsqueda.";
+    pub const LIBRARY_RESET_FILTERS: &'static str = "Restablecer filtros";
+
+    // Reader view
+    pub const READER_BACK: &'static str = "Biblioteca";
+    pub const READER_BACK_HINT: &'static str = "(Esc)";
+    pub const READER_ZOOM_RESET_HINT: &'static str = "Restablecer al 100%";
+    pub const READER_NAV_HINT: &'static str = "← → / Espacio: Navegar  •  Ctrl +/-: Zoom  •  Esc: Salir";
+
+    // Settings tabs
+    pub const TAB_GENERAL: &'static str = "General";
+    pub const TAB_APPEARANCE: &'static str = "Apariencia";
+    pub const TAB_AI: &'static str = "Proveedores (IA)";
+    pub const TAB_SHEET: &'static str = "Hoja";
 
     // Gallery view
     pub const GALLERY_TITLE: &'static str = "Galería de Componentes y Tokens de Diseño";
@@ -37,6 +66,8 @@ impl I18n {
     pub const WINDOW_OPACITY: &'static str = "Opacidad de la ventana";
     pub const WINDOW_BLUR: &'static str = "Desenfoque de la interfaz";
 
-    // Hints
+    // Shortcuts Hints
     pub const HINT_GALLERY_TOGGLE: &'static str = "Presiona Ctrl+Shift+G para alternar la Galería";
+    pub const HINT_SIDEBAR_TOGGLE: &'static str = "Presiona Ctrl+B para alternar la barra lateral";
+    pub const HINT_SEARCH: &'static str = "Presiona Ctrl+F para buscar libros";
 }

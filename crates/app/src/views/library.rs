@@ -64,6 +64,12 @@ impl LibraryView {
         self.on_open_book = Some(Rc::new(handler));
     }
 
+    pub fn focus_search(&self, window: &mut Window, cx: &mut App) {
+        self.search_input.update(cx, |input, cx| {
+            input.focus(window, cx);
+        });
+    }
+
     fn update_filtered_books(&mut self) {
         let query = self.search_query.trim().to_lowercase();
         let current_filter = self.filter;
