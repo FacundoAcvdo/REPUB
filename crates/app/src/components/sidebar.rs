@@ -12,6 +12,7 @@ pub enum NavDestination {
     Library,
     Settings,
     Gallery,
+    Reader,
 }
 
 #[derive(IntoElement)]
@@ -40,6 +41,7 @@ impl SidebarItem {
             NavDestination::Library => "nav_library",
             NavDestination::Settings => "nav_settings",
             NavDestination::Gallery => "nav_gallery",
+            NavDestination::Reader => "nav_reader",
         };
         Self {
             id: ElementId::from(id_str),

@@ -1,3 +1,4 @@
+use std::rc::Rc;
 use epub_core::domain::book::Book;
 use epub_core::domain::stats::ReadingStats;
 use epub_core::mock::books::mock_books;
@@ -17,6 +18,7 @@ pub struct HomeView {
     stats: ReadingStats,
     current_book: Book,
     notification: Option<String>,
+    on_open_book: Option<Rc<dyn Fn(Book, &mut Window, &mut App) + 'static>>,
 }
 
 impl HomeView {
@@ -28,7 +30,12 @@ impl HomeView {
             stats: mock_stats(),
             current_book,
             notification: None,
+            on_open_book: None,
         }
+    }
+
+    pub fn set_on_open_book(&mut self, handler: impl Fn(Book, &mut Window, &mut App) + 'static) {
+        self.on_open_book = Some(Rc::new(handler));
     }
 }
 
@@ -176,23 +183,18 @@ impl Render for HomeView {
                             .gap(px(10.0))
                             .w_full()
                             .child({
-                                let view_read = view.clone();
-                                let book_title = self.current_book.title.clone();
+                                let book_to_read = self.current_book.clone();
+                                let on_open_book = self.on_open_book.clone();
                                 ContinueReadingCard::new(
                                     "card-continue-reading",
                                     self.current_book.clone(),
                                     tokens,
                                     radius,
                                 )
-                                .on_read(move |_, cx| {
-                                    let t = book_title.clone();
-                                    view_read.update(cx, |this, cx| {
-                                        this.notification = Some(format!(
-                                            "Abriendo '{}' en el lector inmersivo (Hito 6)...",
-                                            t
-                                        ));
-                                        cx.notify();
-                                    });
+                                .on_read(move |window, cx| {
+                                    if let Some(ref handler) = on_open_book {
+                                        handler(book_to_read.clone(), window, cx);
+                                    }
                                 })
                             }),
                     )

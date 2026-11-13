@@ -1,11 +1,13 @@
 pub mod palettes;
 pub mod radius;
+pub mod reader_settings;
 pub mod state;
 pub mod tokens;
 pub mod typography;
 
 pub use palettes::*;
 pub use radius::*;
+pub use reader_settings::*;
 pub use state::*;
 pub use tokens::*;
 pub use typography::*;
@@ -16,4 +18,5 @@ pub fn init_theme(cx: &mut App) {
     let state = ThemeState::default();
     state.sync_with_gpui(cx);
     cx.set_global(state);
+    cx.set_global(ReaderSettingsState::default());
 }

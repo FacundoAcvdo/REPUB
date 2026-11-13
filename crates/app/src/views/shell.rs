@@ -1,3 +1,4 @@
+use epub_core::domain::book::Book;
 use gpui_kit::*;
 
 use crate::components::sidebar::{NavDestination, Sidebar};
@@ -6,6 +7,7 @@ use crate::theme::state::ThemeState;
 use crate::views::gallery::GalleryView;
 use crate::views::home::HomeView;
 use crate::views::library::LibraryView;
+use crate::views::reader::ReaderView;
 use crate::views::settings::SettingsView;
 
 pub struct ShellView {
@@ -17,20 +19,68 @@ pub struct ShellView {
     library_view: Entity<LibraryView>,
     settings_view: Entity<SettingsView>,
     gallery_view: Entity<GalleryView>,
+    reader_view: Entity<ReaderView>,
 }
 
 impl ShellView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let home_view = cx.new(|_| HomeView::new());
+        let library_view = cx.new(|cx| LibraryView::new(window, cx));
+        let settings_view = cx.new(|cx| SettingsView::new(window, cx));
+        let gallery_view = cx.new(|_| GalleryView::new());
+        let reader_view = cx.new(|cx| ReaderView::new(cx));
+
+        let entity = cx.entity().clone();
+
+        // Conectar evento de abrir libro desde la Biblioteca
+        let entity_lib = entity.clone();
+        library_view.update(cx, |this, _| {
+            this.set_on_open_book(move |book, window, cx| {
+                entity_lib.update(cx, |this, cx| {
+                    this.open_book(book, window, cx);
+                });
+            });
+        });
+
+        // Conectar evento de reanudar libro desde Inicio
+        let entity_home = entity.clone();
+        home_view.update(cx, |this, _| {
+            this.set_on_open_book(move |book, window, cx| {
+                entity_home.update(cx, |this, cx| {
+                    this.open_book(book, window, cx);
+                });
+            });
+        });
+
+        // Conectar evento de salir/cerrar del lector
+        let entity_reader = entity.clone();
+        reader_view.update(cx, |this, _| {
+            this.set_on_close(move |_, cx| {
+                entity_reader.update(cx, |this, cx| {
+                    this.go_back(cx);
+                });
+            });
+        });
+
         Self {
             is_sidebar_open: true,
             current_dest: NavDestination::Home,
             back_history: Vec::new(),
             forward_history: Vec::new(),
-            home_view: cx.new(|_| HomeView::new()),
-            library_view: cx.new(|cx| LibraryView::new(window, cx)),
-            settings_view: cx.new(|cx| SettingsView::new(window, cx)),
-            gallery_view: cx.new(|_| GalleryView::new()),
+            home_view,
+            library_view,
+            settings_view,
+            gallery_view,
+            reader_view,
         }
+    }
+
+    pub fn open_book(&mut self, book: Book, window: &mut Window, cx: &mut Context<Self>) {
+        self.reader_view.update(cx, |reader, cx| {
+            reader.load_book(book, cx);
+            reader.focus(window, cx);
+        });
+        self.navigate_to(NavDestination::Reader, cx);
     }
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
@@ -53,6 +103,12 @@ impl ShellView {
             self.forward_history.push(self.current_dest);
             self.current_dest = prev;
             cx.notify();
+        } else {
+            // Si el historial está vacío (ej. vino directamente al lector), vuelve a Biblioteca
+            if self.current_dest == NavDestination::Reader {
+                self.current_dest = NavDestination::Library;
+                cx.notify();
+            }
         }
     }
 
@@ -70,6 +126,7 @@ impl ShellView {
             NavDestination::Library => "Biblioteca",
             NavDestination::Settings => "Ajustes",
             NavDestination::Gallery => "Galería de Componentes y Diseño",
+            NavDestination::Reader => "Lector",
         }
     }
 }
@@ -79,6 +136,16 @@ impl Render for ShellView {
         let theme_state = ThemeState::global(cx);
         let tokens = theme_state.tokens();
         let radius = theme_state.radius();
+
+        // En modo Lector Inmersivo, la hoja ocupa el 100% del área de la ventana
+        if self.current_dest == NavDestination::Reader {
+            return div()
+                .flex()
+                .size_full()
+                .text_color(tokens.text)
+                .child(self.reader_view.clone())
+                .into_any_element();
+        }
 
         let entity = cx.entity().clone();
         let entity_nav = entity.clone();
@@ -119,6 +186,7 @@ impl Render for ShellView {
             NavDestination::Library => self.library_view.clone().into_any_element(),
             NavDestination::Settings => self.settings_view.clone().into_any_element(),
             NavDestination::Gallery => self.gallery_view.clone().into_any_element(),
+            NavDestination::Reader => self.reader_view.clone().into_any_element(),
         };
 
         div()
@@ -143,5 +211,6 @@ impl Render for ShellView {
                             .child(active_content),
                     ),
             )
+            .into_any_element()
     }
 }

@@ -16,6 +16,7 @@ use crate::components::settings_section::{SettingRow, SettingsSection};
 use crate::components::stepper::Stepper;
 use crate::components::theme_card::ThemeCard;
 use crate::theme::palettes::all_themes;
+use crate::theme::reader_settings::ReaderSettingsState;
 use crate::theme::state::ThemeState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,9 +86,13 @@ impl SettingsView {
         })
         .detach();
 
+        let reader_settings = ReaderSettingsState::global(cx).settings.clone();
+        let mut settings = AppSettings::default();
+        settings.reader = reader_settings;
+
         Self {
             active_tab: SettingsTab::General,
-            settings: AppSettings::default(),
+            settings,
             test_connection_msg: None,
             is_font_select_open: false,
             model_input,
@@ -1131,6 +1136,7 @@ impl SettingsView {
                                                     view_opt1.update(cx, |this, cx| {
                                                         this.settings.reader.font_family = "Serif (Georgia)".into();
                                                         this.is_font_select_open = false;
+                                                        ReaderSettingsState::update(cx, this.settings.reader.clone());
                                                         cx.notify();
                                                     });
                                                 })
@@ -1155,6 +1161,7 @@ impl SettingsView {
                                                     view_opt2.update(cx, |this, cx| {
                                                         this.settings.reader.font_family = "Sans (Inter)".into();
                                                         this.is_font_select_open = false;
+                                                        ReaderSettingsState::update(cx, this.settings.reader.clone());
                                                         cx.notify();
                                                     });
                                                 })
@@ -1179,6 +1186,7 @@ impl SettingsView {
                                                     view_opt3.update(cx, |this, cx| {
                                                         this.settings.reader.font_family = "Mono (JetBrains)".into();
                                                         this.is_font_select_open = false;
+                                                        ReaderSettingsState::update(cx, this.settings.reader.clone());
                                                         cx.notify();
                                                     });
                                                 })
@@ -1204,23 +1212,25 @@ impl SettingsView {
                                 Stepper::new("step-sheet-size", format!("{} px", font_size), tokens)
                                     .on_decrement(move |_, cx| {
                                         view_dec.update(cx, |this, cx| {
-                                            if this.settings.reader.font_size > 12 {
+                                            if this.settings.reader.font_size > 6 {
                                                 this.settings.reader.font_size -= 1;
+                                                ReaderSettingsState::update(cx, this.settings.reader.clone());
                                                 cx.notify();
                                             }
                                         });
                                     })
                                     .on_increment(move |_, cx| {
                                         view_inc.update(cx, |this, cx| {
-                                            if this.settings.reader.font_size < 32 {
+                                            if this.settings.reader.font_size < 36 {
                                                 this.settings.reader.font_size += 1;
+                                                ReaderSettingsState::update(cx, this.settings.reader.clone());
                                                 cx.notify();
                                             }
                                         });
                                     })
                             },
                         )
-                        .description("Escala cómoda entre 14 y 24 píxeles."),
+                        .description("Escala adaptable entre 6 y 36 píxeles."),
                     )
                     .child(
                         SettingRow::new(
@@ -1235,6 +1245,7 @@ impl SettingsView {
                                         view_dec.update(cx, |this, cx| {
                                             if this.settings.reader.line_height > 1.25 {
                                                 this.settings.reader.line_height -= 0.1;
+                                                ReaderSettingsState::update(cx, this.settings.reader.clone());
                                                 cx.notify();
                                             }
                                         });
@@ -1243,6 +1254,7 @@ impl SettingsView {
                                         view_inc.update(cx, |this, cx| {
                                             if this.settings.reader.line_height < 2.35 {
                                                 this.settings.reader.line_height += 0.1;
+                                                ReaderSettingsState::update(cx, this.settings.reader.clone());
                                                 cx.notify();
                                             }
                                         });
@@ -1268,6 +1280,7 @@ impl SettingsView {
                                     .on_click(move |checked, _, cx| {
                                         view_j.update(cx, |this, cx| {
                                             this.settings.reader.justify_text = *checked;
+                                            ReaderSettingsState::update(cx, this.settings.reader.clone());
                                             cx.notify();
                                         });
                                     })
@@ -1287,6 +1300,7 @@ impl SettingsView {
                                     .on_click(move |checked, _, cx| {
                                         view_t.update(cx, |this, cx| {
                                             this.settings.reader.follow_app_theme = *checked;
+                                            ReaderSettingsState::update(cx, this.settings.reader.clone());
                                             cx.notify();
                                         });
                                     })

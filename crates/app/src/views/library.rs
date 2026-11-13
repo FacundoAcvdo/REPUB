@@ -23,6 +23,7 @@ pub struct LibraryView {
     notification: Option<String>,
     grid_scroll_handle: UniformListScrollHandle,
     list_scroll_handle: UniformListScrollHandle,
+    on_open_book: Option<Rc<dyn Fn(Book, &mut Window, &mut App) + 'static>>,
 }
 
 impl LibraryView {
@@ -53,9 +54,14 @@ impl LibraryView {
             notification: None,
             grid_scroll_handle: UniformListScrollHandle::new(),
             list_scroll_handle: UniformListScrollHandle::new(),
+            on_open_book: None,
         };
         this.update_filtered_books();
         this
+    }
+
+    pub fn set_on_open_book(&mut self, handler: impl Fn(Book, &mut Window, &mut App) + 'static) {
+        self.on_open_book = Some(Rc::new(handler));
     }
 
     fn update_filtered_books(&mut self) {
@@ -323,6 +329,7 @@ impl Render for LibraryView {
 
             let row_count = (filtered_count + items_per_row - 1) / items_per_row;
             let books_rc = Rc::new(self.filtered_books.clone());
+            let on_open_book = self.on_open_book.clone();
 
             uniform_list(
                 "library-virtual-grid",
@@ -334,6 +341,7 @@ impl Render for LibraryView {
                         let end = (start + items_per_row).min(books_rc.len());
                         let row_books = &books_rc[start..end];
 
+                        let on_open_book_row = on_open_book.clone();
                         let row_div = div()
                             .id(ElementId::from(format!("book-row-{}", row_idx)))
                             .h(px(320.0))
@@ -342,14 +350,18 @@ impl Render for LibraryView {
                             .gap(px(20.0))
                             .pb(px(20.0))
                             .children(row_books.iter().map(|book| {
+                                let book_for_click = book.clone();
+                                let cb = on_open_book_row.clone();
                                 BookCard::new(
                                     ElementId::from(book.id.clone()),
                                     book.clone(),
                                     tokens,
                                     radius,
                                 )
-                                .on_click(|book_id, _, _| {
-                                    println!("Abrir lector para libro: {}", book_id);
+                                .on_click(move |_, window, cx| {
+                                    if let Some(ref handler) = cb {
+                                        handler(book_for_click.clone(), window, cx);
+                                    }
                                 })
                             }));
 
@@ -365,6 +377,7 @@ impl Render for LibraryView {
         } else {
             // Virtualized List mode: 1 book per row
             let books_rc = Rc::new(self.filtered_books.clone());
+            let on_open_book = self.on_open_book.clone();
 
             uniform_list(
                 "library-virtual-list",
@@ -373,6 +386,8 @@ impl Render for LibraryView {
                     let mut rows = Vec::with_capacity(range.len());
                     for idx in range {
                         if let Some(book) = books_rc.get(idx) {
+                            let book_for_click = book.clone();
+                            let cb = on_open_book.clone();
                             let row_element = div()
                                 .id(ElementId::from(format!("book-list-row-{}", idx)))
                                 .h(px(76.0))
@@ -384,8 +399,10 @@ impl Render for LibraryView {
                                         tokens,
                                         radius,
                                     )
-                                    .on_click(|book_id, _, _| {
-                                        println!("Abrir lector para libro: {}", book_id);
+                                    .on_click(move |_, window, cx| {
+                                        if let Some(ref handler) = cb {
+                                            handler(book_for_click.clone(), window, cx);
+                                        }
                                     }),
                                 );
                             rows.push(row_element);
