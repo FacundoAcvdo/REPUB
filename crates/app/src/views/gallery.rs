@@ -63,7 +63,6 @@ impl Render for GalleryView {
         let current_theme_id = tokens.id;
         let current_radius = theme_state.corner_radius;
         let window_opacity = theme_state.window_opacity;
-        let interface_blur = theme_state.interface_blur;
         let radius = theme_state.radius();
 
         let entity = cx.entity().clone();
@@ -143,8 +142,8 @@ impl Render for GalleryView {
                             .children(all_themes().into_iter().map(|preset| {
                                 let id = preset.id;
                                 let is_selected = id == current_theme_id;
-                                ThemeCard::new(id, preset, is_selected).on_click(move |_, cx| {
-                                    ThemeState::update_theme(cx, id);
+                                ThemeCard::new(id, preset, is_selected).on_click(move |window, cx| {
+                                    ThemeState::update_theme(Some(window), cx, id);
                                 })
                             })),
                     ),
@@ -295,50 +294,27 @@ impl Render for GalleryView {
                                                     .hover(|s| s.bg(tokens.bg_hover))
                                             })
                                             .on_click(move |_, window, cx| {
-                                                ThemeState::update_window_opacity(cx, alpha);
-                                                window.set_background_appearance(WindowBackgroundAppearance::Transparent);
+                                                ThemeState::update_window_opacity(Some(window), cx, alpha);
                                             })
                                             .child(format!("{}%", pct))
                                     })),
                             ),
                     )
-                    // Row 2: Blur toggle
+                    // Row 2: Linux Blur info note
                     .child(
                         div()
                             .flex()
                             .flex_row()
-                            .items_center()
-                            .justify_between()
+                            .items_start()
+                            .gap(px(8.0))
+                            .p(px(10.0))
+                            .rounded(radius)
+                            .bg(tokens.bg_sunken)
                             .child(
                                 div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.0))
-                                    .child(
-                                        div()
-                                            .text_size(TypographyScale::BASE)
-                                            .font_medium()
-                                            .child(I18n::WINDOW_BLUR),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(tokens.text_muted)
-                                            .child("Efecto de desenfoque combinado con opacidad"),
-                                    ),
-                            )
-                            .child(
-                                Switch::new("gallery_blur_switch")
-                                    .checked(interface_blur)
-                                    .on_click(move |checked, window, cx| {
-                                        let is_blur = *checked;
-                                        ThemeState::update_interface_blur(cx, is_blur);
-                                        window.set_background_appearance(if is_blur {
-                                            WindowBackgroundAppearance::Blurred
-                                        } else {
-                                            WindowBackgroundAppearance::Transparent
-                                        });
-                                    }),
+                                    .text_xs()
+                                    .text_color(tokens.text_muted)
+                                    .child("En Linux Wayland con BetterBlurDx (KDE Plasma), el desenfoque se puede forzar externamente desde la configuración del plugin."),
                             ),
                     ),
             )

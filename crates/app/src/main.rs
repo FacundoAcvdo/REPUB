@@ -64,6 +64,13 @@ fn main() {
                 KeyBinding::new("ctrl-b", ToggleSidebar, None),
             ]);
 
+            let blur = ThemeState::global(cx).interface_blur;
+            let initial_appearance = if blur {
+                WindowBackgroundAppearance::Blurred
+            } else {
+                WindowBackgroundAppearance::Transparent
+            };
+
             gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -75,11 +82,14 @@ fn main() {
                         title: Some("EPUB Reader".into()),
                         ..Default::default()
                     }),
-                    window_background: WindowBackgroundAppearance::Transparent,
+                    window_background: initial_appearance,
                     ..Default::default()
                 },
                 cx,
-                |window, cx| cx.new(|cx| AppRoot::new(window, cx)),
+                |window, cx| {
+                    window.set_background_appearance(initial_appearance);
+                    cx.new(|cx| AppRoot::new(window, cx))
+                },
             )
             .expect("falló al abrir la ventana de EPUB Reader");
         });

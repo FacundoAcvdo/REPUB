@@ -1,6 +1,6 @@
 use epub_core::domain::settings::CornerRadiusStyle;
 use gpui_kit::component::{Theme, ThemeMode};
-use gpui_kit::{App, Global, Hsla, Pixels};
+use gpui_kit::{App, Global, Hsla, Pixels, Window, WindowBackgroundAppearance};
 
 use crate::theme::palettes::get_theme_by_id;
 use crate::theme::radius::RadiusTokens;
@@ -56,11 +56,20 @@ impl ThemeState {
         self.corner_radius.lg_radius()
     }
 
-    pub fn update_theme(cx: &mut App, theme_id: &str) {
+    pub fn update_theme(window: Option<&mut Window>, cx: &mut App, theme_id: &str) {
         let mut state = cx.global::<Self>().clone();
         state.current_theme = get_theme_by_id(theme_id);
         state.sync_with_gpui(cx);
-        cx.set_global(state);
+        cx.set_global(state.clone());
+
+        if let Some(window) = window {
+            let appearance = if state.interface_blur {
+                WindowBackgroundAppearance::Blurred
+            } else {
+                WindowBackgroundAppearance::Transparent
+            };
+            window.set_background_appearance(appearance);
+        }
     }
 
     pub fn update_corner_radius(cx: &mut App, style: CornerRadiusStyle) {
@@ -70,22 +79,46 @@ impl ThemeState {
         cx.set_global(state);
     }
 
-    pub fn update_window_opacity(cx: &mut App, opacity: f32) {
+    pub fn update_window_opacity(window: Option<&mut Window>, cx: &mut App, opacity: f32) {
         let mut state = cx.global::<Self>().clone();
         state.window_opacity = opacity.clamp(0.1, 1.0);
         state.sync_with_gpui(cx);
-        cx.set_global(state);
+        cx.set_global(state.clone());
+
+        if let Some(window) = window {
+            let appearance = if state.interface_blur {
+                WindowBackgroundAppearance::Blurred
+            } else {
+                WindowBackgroundAppearance::Transparent
+            };
+            window.set_background_appearance(appearance);
+        }
     }
 
-    pub fn update_interface_blur(cx: &mut App, blur: bool) {
+    pub fn update_interface_blur(window: Option<&mut Window>, cx: &mut App, blur: bool) {
         let mut state = cx.global::<Self>().clone();
         state.interface_blur = blur;
+        // When activating blur, if opacity was fully opaque, gently drop to 85%
+        // so the blur effect is immediately visible across any selected theme.
+        if blur && state.window_opacity >= 0.99 {
+            state.window_opacity = 0.85;
+        }
         state.sync_with_gpui(cx);
-        cx.set_global(state);
+        cx.set_global(state.clone());
+
+        if let Some(window) = window {
+            let appearance = if blur {
+                WindowBackgroundAppearance::Blurred
+            } else {
+                WindowBackgroundAppearance::Transparent
+            };
+            window.set_background_appearance(appearance);
+        }
     }
 
     pub fn sync_with_gpui(&self, cx: &mut App) {
         let tokens = self.current_theme;
+        let window_bg = self.window_bg();
         let radius = self.radius();
         let lg_radius = self.lg_radius();
         let mode = if tokens.is_dark {
@@ -94,12 +127,17 @@ impl ThemeState {
             ThemeMode::Light
         };
 
+        // 1. Switch mode in a first update so gpui-component's internal apply_config runs first
         Theme::update(cx, |theme| {
             theme.mode = mode;
+        });
+
+        // 2. Apply our custom tokens, colors and translucent window_bg in a second update so they survive
+        Theme::update(cx, |theme| {
             theme.radius = radius;
             theme.radius_lg = lg_radius;
 
-            theme.colors.background = tokens.bg;
+            theme.colors.background = window_bg;
             theme.colors.foreground = tokens.text;
             theme.colors.border = tokens.border;
 
@@ -116,7 +154,7 @@ impl ThemeState {
             theme.colors.accent = tokens.bg_hover;
             theme.colors.accent_foreground = tokens.text;
 
-            theme.colors.sidebar = tokens.bg;
+            theme.colors.sidebar = window_bg;
             theme.colors.sidebar_foreground = tokens.text;
             theme.colors.sidebar_border = tokens.border;
             theme.colors.sidebar_accent = tokens.bg_hover;

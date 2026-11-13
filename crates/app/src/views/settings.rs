@@ -384,9 +384,11 @@ impl SettingsView {
         let current_theme_id = theme_state.current_theme.id;
         let current_radius = theme_state.corner_radius;
         let current_opacity = theme_state.window_opacity;
-        let current_blur = theme_state.interface_blur;
 
         let all_palettes = all_themes();
+        let view_for_themes = cx.entity().clone();
+        let view_for_corners = cx.entity().clone();
+        let view_for_opacity = cx.entity().clone();
 
         div()
             .flex()
@@ -419,14 +421,19 @@ impl SettingsView {
                                     .children(all_palettes.into_iter().map(move |palette| {
                                         let p_id = palette.id;
                                         let is_selected = p_id == current_theme_id;
+                                        let view_theme = view_for_themes.clone();
 
                                         ThemeCard::new(
                                             ElementId::from(format!("theme-card-{}", p_id)),
                                             palette,
                                             is_selected,
                                         )
-                                        .on_click(move |_, cx| {
-                                            ThemeState::update_theme(cx, p_id);
+                                        .on_click(move |window, cx| {
+                                            ThemeState::update_theme(Some(window), cx, p_id);
+                                            view_theme.update(cx, |this, cx| {
+                                                this.settings.appearance.theme_id = p_id.into();
+                                                cx.notify();
+                                            });
                                         })
                                     })),
                             ),
@@ -458,6 +465,7 @@ impl SettingsView {
                                     .children(CornerRadiusStyle::all().iter().map(move |style| {
                                         let s = *style;
                                         let is_selected = s == current_radius;
+                                        let view_corner = view_for_corners.clone();
 
                                         CornerCard::new(
                                             ElementId::from(format!("corner-card-{:?}", s)),
@@ -468,6 +476,10 @@ impl SettingsView {
                                         )
                                         .on_click(move |_, cx| {
                                             ThemeState::update_corner_radius(cx, s);
+                                            view_corner.update(cx, |this, cx| {
+                                                this.settings.appearance.corner_radius = s;
+                                                cx.notify();
+                                            });
                                         })
                                     })),
                             ),
@@ -549,6 +561,7 @@ impl SettingsView {
                                     .pt(px(4.0))
                                     .children([1.0, 0.8, 0.6, 0.4, 0.2].into_iter().map(move |val| {
                                         let is_current = (current_opacity - val).abs() < 0.05;
+                                        let view_op = view_for_opacity.clone();
                                         div()
                                             .id(ElementId::from(format!("op-preset-{:.0}", val * 100.0)))
                                             .px(px(12.0))
@@ -568,25 +581,60 @@ impl SettingsView {
                                                     .border_color(tokens.border)
                                                     .hover(|s| s.text_color(tokens.text).bg(tokens.bg_hover))
                                             })
-                                            .on_click(move |_, _, cx| {
-                                                ThemeState::update_window_opacity(cx, val);
+                                            .on_click(move |_, window, cx| {
+                                                ThemeState::update_window_opacity(Some(window), cx, val);
+                                                view_op.update(cx, |this, cx| {
+                                                    this.settings.appearance.window_opacity = val;
+                                                    cx.notify();
+                                                });
                                             })
                                             .child(format!("{:.0}%", val * 100.0))
                                     })),
                             ),
                     )
                     .child(
-                        SettingRow::new(
-                            "row-blur",
-                            "Desenfoque de fondo (Blur)",
-                            tokens,
-                            Switch::new("switch-blur")
-                                .checked(current_blur)
-                                .on_click(move |checked, _, cx| {
-                                    ThemeState::update_interface_blur(cx, *checked);
-                                }),
-                        )
-                        .description("Aplica efecto de desenfoque de compositor en escritorios compatibles."),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_start()
+                            .gap(px(10.0))
+                            .p(px(12.0))
+                            .rounded(radius)
+                            .bg(tokens.bg_sunken)
+                            .border_1()
+                            .border_color(tokens.border_subtle)
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .pt(px(2.0))
+                                    .child(
+                                        Icon::new(IconName::Sparkles)
+                                            .size(px(15.0))
+                                            .text_color(tokens.accent),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap(px(2.0))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_semibold()
+                                            .text_color(tokens.text)
+                                            .child("Desenfoque en Linux (KDE Plasma)"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(tokens.text_muted)
+                                            .whitespace_normal()
+                                            .child("Si estás ejecutando en Linux con BetterBlurDx, puedes forzar el efecto de desenfoque desde la configuración del plugin para que se aplique directamente sobre la ventana translúcida."),
+                                    ),
+                            ),
                     ),
             )
             // Section 4: Typography scale
