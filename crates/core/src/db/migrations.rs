@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS books (
     cover_path TEXT,
     cover_color TEXT NOT NULL,
     language TEXT NOT NULL DEFAULT 'es',
+    ai_enabled INTEGER NOT NULL DEFAULT 1,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -53,6 +54,43 @@ CREATE TABLE IF NOT EXISTS bookmarks (
     note TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS book_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    chapter_index INTEGER NOT NULL,
+    chapter_title TEXT NOT NULL DEFAULT '',
+    page_start INTEGER NOT NULL,
+    page_end INTEGER NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    embedding BLOB
+);
+
+CREATE TABLE IF NOT EXISTS book_index_state (
+    book_id TEXT PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
+    embedding_source TEXT NOT NULL,
+    embedding_model TEXT NOT NULL,
+    total_chunks INTEGER NOT NULL DEFAULT 0,
+    indexed_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chapter_summaries (
+    book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    chapter_index INTEGER NOT NULL,
+    chapter_title TEXT NOT NULL DEFAULT '',
+    page_start INTEGER NOT NULL,
+    page_end INTEGER NOT NULL,
+    summary TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (book_id, chapter_index)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS book_chunks_fts USING fts5(
+    content,
+    book_id UNINDEXED,
+    chunk_id UNINDEXED
+);
 "#;
 
 const V1_INDEXES: &str = r#"
@@ -62,6 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_progress_last_read ON reading_progress(last_read_
 CREATE INDEX IF NOT EXISTS idx_progress_status ON reading_progress(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_date ON reading_sessions(date);
 CREATE INDEX IF NOT EXISTS idx_bookmarks_book ON bookmarks(book_id, page_number);
+CREATE INDEX IF NOT EXISTS idx_chunks_book_page ON book_chunks(book_id, page_start);
 "#;
 
 fn has_incompatible_pk(conn: &Connection, table: &str, pk_col: &str) -> CoreResult<bool> {
@@ -82,9 +121,17 @@ fn reset_incompatible_legacy_tables(conn: &Connection) -> CoreResult<()> {
         || has_incompatible_pk(conn, "reading_progress", "book_id")?
     {
         conn.execute_batch(
-            "DROP TABLE IF EXISTS reading_sessions;
+            "DROP TABLE IF EXISTS book_chunks;
+             DROP TABLE IF EXISTS book_index_state;
+             DROP TABLE IF EXISTS reading_sessions;
              DROP TABLE IF EXISTS reading_progress;
              DROP TABLE IF EXISTS books;",
+        )?;
+        conn.execute_batch(V1_TABLES)?;
+    } else if has_incompatible_pk(conn, "book_chunks", "book_id")? {
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS book_chunks;
+             DROP TABLE IF EXISTS book_index_state;",
         )?;
         conn.execute_batch(V1_TABLES)?;
     }
@@ -121,6 +168,7 @@ fn ensure_v1_columns(conn: &Connection) -> CoreResult<()> {
             ("cover_path", "TEXT"),
             ("cover_color", "TEXT NOT NULL DEFAULT '#3B5998'"),
             ("language", "TEXT NOT NULL DEFAULT 'es'"),
+            ("ai_enabled", "INTEGER NOT NULL DEFAULT 1"),
             ("created_at", "INTEGER NOT NULL DEFAULT 0"),
             ("updated_at", "INTEGER NOT NULL DEFAULT 0"),
         ],
@@ -146,6 +194,20 @@ fn ensure_v1_columns(conn: &Connection) -> CoreResult<()> {
         &[
             ("minutes_read", "INTEGER NOT NULL DEFAULT 0"),
             ("pages_read", "INTEGER NOT NULL DEFAULT 0"),
+        ],
+    )?;
+
+    ensure_columns(
+        conn,
+        "book_chunks",
+        &[
+            ("chapter_index", "INTEGER NOT NULL DEFAULT 0"),
+            ("chapter_title", "TEXT NOT NULL DEFAULT ''"),
+            ("page_start", "INTEGER NOT NULL DEFAULT 1"),
+            ("page_end", "INTEGER NOT NULL DEFAULT 1"),
+            ("chunk_index", "INTEGER NOT NULL DEFAULT 0"),
+            ("content", "TEXT NOT NULL DEFAULT ''"),
+            ("embedding", "BLOB"),
         ],
     )?;
 
@@ -190,6 +252,39 @@ pub fn run_migrations(conn: &mut Connection) -> CoreResult<()> {
                 chapter_title TEXT NOT NULL DEFAULT '',
                 note TEXT NOT NULL DEFAULT '',
                 created_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS book_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+                chapter_index INTEGER NOT NULL,
+                chapter_title TEXT NOT NULL DEFAULT '',
+                page_start INTEGER NOT NULL,
+                page_end INTEGER NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                embedding BLOB
+            );
+            CREATE TABLE IF NOT EXISTS book_index_state (
+                book_id TEXT PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
+                embedding_source TEXT NOT NULL,
+                embedding_model TEXT NOT NULL,
+                total_chunks INTEGER NOT NULL DEFAULT 0,
+                indexed_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS chapter_summaries (
+                book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+                chapter_index INTEGER NOT NULL,
+                chapter_title TEXT NOT NULL DEFAULT '',
+                page_start INTEGER NOT NULL,
+                page_end INTEGER NOT NULL,
+                summary TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (book_id, chapter_index)
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS book_chunks_fts USING fts5(
+                content,
+                book_id UNINDEXED,
+                chunk_id UNINDEXED
             );",
         )?;
         ensure_v1_columns(conn)?;

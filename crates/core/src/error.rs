@@ -9,6 +9,7 @@ pub enum CoreError {
     EpubParse(String),
     NotFound(String),
     InvalidInput(String),
+    Network(String),
 }
 
 pub type CoreResult<T> = Result<T, CoreError>;
@@ -22,6 +23,7 @@ impl fmt::Display for CoreError {
             CoreError::EpubParse(msg) => write!(f, "Error al leer EPUB: {msg}"),
             CoreError::NotFound(msg) => write!(f, "Recurso no encontrado: {msg}"),
             CoreError::InvalidInput(msg) => write!(f, "Entrada inválida: {msg}"),
+            CoreError::Network(msg) => write!(f, "Error de red/IA: {msg}"),
         }
     }
 }
@@ -32,7 +34,10 @@ impl std::error::Error for CoreError {
             CoreError::Database(err) => Some(err),
             CoreError::Serialization(err) => Some(err),
             CoreError::Io(err) => Some(err),
-            CoreError::EpubParse(_) | CoreError::NotFound(_) | CoreError::InvalidInput(_) => None,
+            CoreError::EpubParse(_)
+            | CoreError::NotFound(_)
+            | CoreError::InvalidInput(_)
+            | CoreError::Network(_) => None,
         }
     }
 }

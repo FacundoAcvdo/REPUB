@@ -112,6 +112,68 @@ impl Default for AppearanceSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum EmbeddingSource {
+    #[default]
+    Unconfigured,
+    Local,
+    Cloud,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalEmbeddingModelInfo {
+    pub id: &'static str,
+    pub display_name: &'static str,
+    pub dimensions: usize,
+    pub approx_size_label: &'static str,
+    pub languages: &'static str,
+    pub description: &'static str,
+    pub recommended: bool,
+}
+
+impl LocalEmbeddingModelInfo {
+    pub fn all() -> &'static [LocalEmbeddingModelInfo] {
+        &[
+            LocalEmbeddingModelInfo {
+                id: "multilingual-e5-small",
+                display_name: "multilingual-e5-small",
+                dimensions: 384,
+                approx_size_label: "~120 MB",
+                languages: "Español, Inglés (+90 idiomas)",
+                description: "Mejor equilibrio entre velocidad en CPU, tamaño y precisión literaria.",
+                recommended: true,
+            },
+            LocalEmbeddingModelInfo {
+                id: "multilingual-e5-base",
+                display_name: "multilingual-e5-base",
+                dimensions: 768,
+                approx_size_label: "~450 MB",
+                languages: "Español, Inglés (+90 idiomas)",
+                description: "Mayor riqueza semántica en novelas largas; se beneficia de GPU o buena RAM.",
+                recommended: false,
+            },
+            LocalEmbeddingModelInfo {
+                id: "multilingual-e5-large",
+                display_name: "multilingual-e5-large",
+                dimensions: 1024,
+                approx_size_label: "~2.2 GB",
+                languages: "Multilingüe (+100 idiomas)",
+                description: "Máxima calidad para textos complejos y contexto largo; mayor uso de disco/GPU.",
+                recommended: false,
+            },
+            LocalEmbeddingModelInfo {
+                id: "all-MiniLM-L6-v2",
+                display_name: "all-MiniLM-L6-v2",
+                dimensions: 384,
+                approx_size_label: "~90 MB",
+                languages: "Principalmente Inglés",
+                description: "Opción ultraliviana y rápida si lees principalmente en inglés.",
+                recommended: false,
+            },
+        ]
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AiSettings {
     pub provider: String,
@@ -119,16 +181,22 @@ pub struct AiSettings {
     pub model: String,
     pub base_url: String,
     pub privacy_accepted: bool,
+    #[serde(default)]
+    pub embedding_source: EmbeddingSource,
+    #[serde(default)]
+    pub local_embedding_model: Option<String>,
 }
 
 impl Default for AiSettings {
     fn default() -> Self {
         Self {
             provider: "OpenAI".into(),
-            api_key: "sk-••••••••••••••••••••••••".into(),
+            api_key: String::new(),
             model: "gpt-4o-mini".into(),
-            base_url: "http://localhost:11434".into(),
+            base_url: String::new(),
             privacy_accepted: true,
+            embedding_source: EmbeddingSource::Unconfigured,
+            local_embedding_model: None,
         }
     }
 }

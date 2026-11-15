@@ -5,9 +5,11 @@ edition = "2021"
 
 [dependencies]
 epub = "2.1"
+fastembed = "4"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+ureq = { version = "2", features = ["json"] }
 
 [dev-dependencies]
 zip = "9.5"

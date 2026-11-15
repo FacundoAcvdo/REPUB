@@ -12,6 +12,7 @@ pub struct StoredBook {
     pub cover_path: Option<String>,
     pub language: String,
     pub is_favorite: bool,
+    pub ai_enabled: bool,
     pub last_read_at: Option<i64>,
     pub reading_time_seconds: u64,
 }
@@ -88,6 +89,7 @@ impl BookRepository {
             SELECT
                 b.id, b.title, b.author, b.description, b.genre, b.total_pages,
                 b.file_path, b.cover_path, b.cover_color, b.language,
+                COALESCE(b.ai_enabled, 1) AS ai_enabled,
                 COALESCE(p.current_page, 0) AS current_page,
                 COALESCE(p.is_favorite, 0) AS is_favorite,
                 p.last_read_at,
@@ -132,6 +134,7 @@ impl BookRepository {
             "SELECT
                 b.id, b.title, b.author, b.description, b.genre, b.total_pages,
                 b.file_path, b.cover_path, b.cover_color, b.language,
+                COALESCE(b.ai_enabled, 1) AS ai_enabled,
                 COALESCE(p.current_page, 0) AS current_page,
                 COALESCE(p.is_favorite, 0) AS is_favorite,
                 p.last_read_at,
@@ -164,6 +167,28 @@ impl BookRepository {
             params![total_pages, book_id],
         )?;
         Ok(())
+    }
+
+    /// Habilita o deshabilita la asistencia de IA y la indexación RAG para un libro específico.
+    pub fn set_ai_enabled(conn: &Connection, book_id: &str, enabled: bool) -> CoreResult<()> {
+        let flag: i64 = if enabled { 1 } else { 0 };
+        conn.execute(
+            "UPDATE books SET ai_enabled = ?1 WHERE id = ?2",
+            params![flag, book_id],
+        )?;
+        Ok(())
+    }
+
+    /// Indica si el libro tiene habilitada la asistencia de IA.
+    pub fn is_ai_enabled(conn: &Connection, book_id: &str) -> CoreResult<bool> {
+        let flag: Option<i64> = conn
+            .query_row(
+                "SELECT COALESCE(ai_enabled, 1) FROM books WHERE id = ?1",
+                params![book_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(flag.unwrap_or(1) != 0)
     }
 
     /// Elimina un libro por su ID (las tablas relacionadas se eliminan por cascada).
@@ -214,6 +239,7 @@ impl BookRepository {
         };
 
         let is_fav_int: i64 = row.get("is_favorite")?;
+        let ai_enabled_int: i64 = row.get("ai_enabled")?;
         let reading_secs: i64 = row.get("reading_time_seconds")?;
 
         Ok(StoredBook {
@@ -222,6 +248,7 @@ impl BookRepository {
             cover_path: row.get("cover_path")?,
             language: row.get("language")?,
             is_favorite: is_fav_int != 0,
+            ai_enabled: ai_enabled_int != 0,
             last_read_at: row.get("last_read_at")?,
             reading_time_seconds: reading_secs.max(0) as u64,
         })

@@ -1,10 +1,10 @@
 use std::rc::Rc;
 use std::time::Instant;
-use epub_core::db::{BookRepository, BookmarkRecord, BookmarkRepository, Database};
+use epub_core::db::{BookRepository, BookmarkRecord, BookmarkRepository, Database, SettingsRepository};
 use epub_core::domain::book::Book;
 use epub_core::epub::{PaginatedBook, PaginationConfig};
 use epub_core::mock::books::mock_books;
-use epub_core::services::ReaderService;
+use epub_core::services::{AssistantAnswer, RagService, ReaderService};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::input::{Input, InputState};
@@ -30,6 +30,23 @@ pub struct ReaderView {
     panel_tab: ReaderPanelTab,
     bookmarks: Vec<BookmarkRecord>,
     note_input: Entity<InputState>,
+    ai_enabled_for_book: bool,
+    is_ai_drawer_open: bool,
+    ai_drawer_width: f32,
+    is_resizing_ai_drawer: bool,
+    ai_resize_start_x: f32,
+    ai_resize_start_width: f32,
+    ai_question_input: Entity<InputState>,
+    ai_selected_quote: Option<String>,
+    ai_answer: Option<AssistantAnswer>,
+    ai_error: Option<String>,
+    is_ai_loading: bool,
+    current_paragraphs: Vec<String>,
+    paragraph_layouts: Vec<TextLayout>,
+    drag_anchor: Option<(usize, usize)>,
+    selection_range: Option<(usize, usize, usize)>,
+    is_dragging_text: bool,
+    tooltip_pos: Option<Point<Pixels>>,
     last_activity_at: Instant,
     focus_handle: FocusHandle,
     on_close: Option<Rc<dyn Fn(&mut Window, &mut App) + 'static>>,
@@ -45,6 +62,9 @@ impl ReaderView {
         let note_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Nota opcional para esta página...")
         });
+        let ai_question_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Pregunta sobre lo leído hasta aquí...")
+        });
 
         Self {
             book: default_book,
@@ -55,6 +75,23 @@ impl ReaderView {
             panel_tab: ReaderPanelTab::Toc,
             bookmarks: Vec::new(),
             note_input,
+            ai_enabled_for_book: true,
+            is_ai_drawer_open: false,
+            ai_drawer_width: 380.0,
+            is_resizing_ai_drawer: false,
+            ai_resize_start_x: 0.0,
+            ai_resize_start_width: 380.0,
+            ai_question_input,
+            ai_selected_quote: None,
+            ai_answer: None,
+            ai_error: None,
+            is_ai_loading: false,
+            current_paragraphs: Vec::new(),
+            paragraph_layouts: Vec::new(),
+            drag_anchor: None,
+            selection_range: None,
+            is_dragging_text: false,
+            tooltip_pos: None,
             last_activity_at: Instant::now(),
             focus_handle: cx.focus_handle(),
             on_close: None,
@@ -96,8 +133,27 @@ impl ReaderView {
             }
         }
 
+        let mut ai_enabled = true;
+        if let Some(db_path) = Database::default_db_path() {
+            if db_path.exists() {
+                if let Ok(db) = Database::open(&db_path) {
+                    ai_enabled = BookRepository::is_ai_enabled(db.conn(), &book.id).unwrap_or(true);
+                }
+            }
+        }
+
         self.total_pages = book.total_pages.max(1);
         self.current_page = book.current_page.max(1).min(self.total_pages);
+        self.ai_enabled_for_book = ai_enabled;
+        if !ai_enabled {
+            self.is_ai_drawer_open = false;
+        }
+        self.ai_selected_quote = None;
+        self.ai_answer = None;
+        self.ai_error = None;
+        self.selection_range = None;
+        self.tooltip_pos = None;
+        self.drag_anchor = None;
         self.last_activity_at = Instant::now();
         self.book = Some(book);
         self.reload_bookmarks();
@@ -204,9 +260,148 @@ impl ReaderView {
         let target = page.clamp(1, self.total_pages);
         if target != self.current_page {
             self.current_page = target;
+            self.clear_selection_internal();
             self.persist_progress(0);
             cx.notify();
         }
+    }
+
+    fn clear_selection_internal(&mut self) {
+        self.selection_range = None;
+        self.drag_anchor = None;
+        self.tooltip_pos = None;
+        self.is_dragging_text = false;
+    }
+
+    pub fn selected_text(&self) -> Option<String> {
+        let (p_idx, start, end) = self.selection_range?;
+        if end <= start {
+            return None;
+        }
+        let para = self.current_paragraphs.get(p_idx)?;
+        let s = start.min(para.len());
+        let e = end.min(para.len());
+        if e <= s {
+            return None;
+        }
+        let slice = para.get(s..e)?.trim();
+        if slice.is_empty() {
+            None
+        } else {
+            Some(slice.to_string())
+        }
+    }
+
+    pub fn toggle_ai_for_book(&mut self, cx: &mut Context<Self>) {
+        self.ai_enabled_for_book = !self.ai_enabled_for_book;
+        if !self.ai_enabled_for_book {
+            self.is_ai_drawer_open = false;
+            self.tooltip_pos = None;
+        }
+        if let Some(ref book) = self.book {
+            if let Some(db_path) = Database::default_db_path() {
+                if let Ok(db) = Database::open(db_path) {
+                    let _ =
+                        BookRepository::set_ai_enabled(db.conn(), &book.id, self.ai_enabled_for_book);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn toggle_ai_drawer(&mut self, cx: &mut Context<Self>) {
+        if !self.ai_enabled_for_book {
+            return;
+        }
+        self.is_ai_drawer_open = !self.is_ai_drawer_open;
+        cx.notify();
+    }
+
+    pub fn open_ai_with_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.ai_enabled_for_book {
+            return;
+        }
+        if let Some(quote) = self.selected_text() {
+            self.ai_selected_quote = Some(quote);
+        }
+        self.tooltip_pos = None;
+        self.is_ai_drawer_open = true;
+        self.ai_question_input.update(cx, |input, cx| {
+            input.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    pub fn copy_selection(&mut self, cx: &mut Context<Self>) {
+        if let Some(text) = self.selected_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+        self.clear_selection_internal();
+        cx.notify();
+    }
+
+    pub fn ask_ai(&mut self, preset_question: Option<String>, cx: &mut Context<Self>) {
+        if !self.ai_enabled_for_book || self.is_ai_loading {
+            return;
+        }
+        let Some(book) = self.book.clone() else {
+            return;
+        };
+
+        let question = match preset_question {
+            Some(q) => q,
+            None => self.ai_question_input.read(cx).value().trim().to_string(),
+        };
+        if question.is_empty() {
+            self.ai_error = Some("Escribe una pregunta o elige una acción rápida.".into());
+            cx.notify();
+            return;
+        }
+
+        let current_page = self.current_page;
+        let selected_quote = self.ai_selected_quote.clone();
+        self.is_ai_loading = true;
+        self.ai_error = None;
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let db_path = Database::default_db_path().ok_or_else(|| {
+                        "No se pudo acceder a la base de datos local.".to_string()
+                    })?;
+                    let mut db = Database::open(db_path).map_err(|e| e.to_string())?;
+                    let app_settings =
+                        SettingsRepository::load_settings(db.conn()).map_err(|e| e.to_string())?;
+
+                    RagService::ask_assistant(
+                        db.conn_mut(),
+                        &book,
+                        current_page,
+                        selected_quote.as_deref(),
+                        &question,
+                        &app_settings.ai,
+                    )
+                    .map_err(|e| e.to_string())
+                })
+                .await;
+
+            let _ = this.update(cx, |view, cx| {
+                view.is_ai_loading = false;
+                match result {
+                    Ok(ans) => {
+                        view.ai_answer = Some(ans);
+                        view.ai_error = None;
+                    }
+                    Err(err) => {
+                        view.ai_error = Some(err);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn persist_progress(&mut self, pages_delta: u32) {
@@ -258,6 +453,7 @@ impl ReaderView {
             if let Some(ref mut b) = self.book {
                 b.current_page = self.current_page;
             }
+            self.clear_selection_internal();
             self.persist_progress(0);
             cx.notify();
         }
@@ -269,6 +465,7 @@ impl ReaderView {
             if let Some(ref mut b) = self.book {
                 b.current_page = self.current_page;
             }
+            self.clear_selection_internal();
             self.persist_progress(1);
             cx.notify();
         }
@@ -386,6 +583,9 @@ impl Render for ReaderView {
             hsla(40.0 / 360.0, 0.25, 0.95, 1.0)
         };
 
+        self.current_paragraphs = page_content.paragraphs.clone();
+        self.paragraph_layouts.clear();
+
         let view_prev = cx.entity().clone();
         let view_next = cx.entity().clone();
         let view_hud_back = cx.entity().clone();
@@ -396,6 +596,8 @@ impl Render for ReaderView {
         let view_zoom_reset = cx.entity().clone();
         let view_toggle_panel = cx.entity().clone();
         let view_toggle_bm = cx.entity().clone();
+        let view_toggle_ai_book = cx.entity().clone();
+        let view_toggle_ai_drawer = cx.entity().clone();
         let is_current_bookmarked = self
             .bookmarks
             .iter()
@@ -404,10 +606,22 @@ impl Render for ReaderView {
         div()
             .id("reader-container")
             .track_focus(&self.focus_handle)
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, event: &MouseUpEvent, _, cx| {
+                if this.is_dragging_text {
+                    this.is_dragging_text = false;
+                    if this.selected_text().is_some() {
+                        this.tooltip_pos = Some(event.position);
+                    } else {
+                        this.tooltip_pos = None;
+                    }
+                    cx.notify();
+                }
+            }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let key = event.keystroke.key.to_lowercase();
                 let is_ctrl = event.keystroke.modifiers.control || event.keystroke.modifiers.platform;
-                let typing_note = this.note_input.focus_handle(cx).is_focused(window);
+                let typing_input = this.note_input.focus_handle(cx).is_focused(window)
+                    || this.ai_question_input.focus_handle(cx).is_focused(window);
 
                 if is_ctrl && key == "d" {
                     this.toggle_bookmark(cx);
@@ -420,19 +634,22 @@ impl Render for ReaderView {
                 } else if is_ctrl && key == "0" {
                     this.zoom_reset(cx);
                 } else if key == "escape" {
-                    if typing_note {
+                    if typing_input {
                         this.focus_handle.focus(window, cx);
+                    } else if this.tooltip_pos.is_some() {
+                        this.clear_selection_internal();
+                        cx.notify();
                     } else {
                         this.close(window, cx);
                     }
-                } else if !typing_note
+                } else if !typing_input
                     && (key == "left"
                         || key == "arrowleft"
                         || key == "pageup"
                         || (key == " " && event.keystroke.modifiers.shift))
                 {
                     this.prev_page(cx);
-                } else if !typing_note
+                } else if !typing_input
                     && (key == "right"
                         || key == "arrowright"
                         || key == "pagedown"
@@ -743,6 +960,95 @@ impl Render for ReaderView {
                                             ),
                                     ),
                             )
+                            // Toggle IA por libro
+                            .child(
+                                div()
+                                    .id("btn-reader-ai-book-toggle")
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(4.0))
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded(px(4.0))
+                                    .border_1()
+                                    .border_color(if self.ai_enabled_for_book {
+                                        tokens.accent.opacity(0.6)
+                                    } else {
+                                        tokens.border.opacity(0.6)
+                                    })
+                                    .bg(tokens.bg_sunken)
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(tokens.bg_hover))
+                                    .on_click(move |_, _, cx| {
+                                        view_toggle_ai_book.update(cx, |this, cx| {
+                                            this.toggle_ai_for_book(cx);
+                                        });
+                                    })
+                                    .child(
+                                        Icon::new(IconName::Sparkles)
+                                            .size(px(11.0))
+                                            .text_color(if self.ai_enabled_for_book {
+                                                tokens.accent
+                                            } else {
+                                                tokens.text_muted
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.0))
+                                            .font_medium()
+                                            .text_color(if self.ai_enabled_for_book {
+                                                tokens.text
+                                            } else {
+                                                tokens.text_muted
+                                            })
+                                            .child(if self.ai_enabled_for_book {
+                                                "IA: Activa"
+                                            } else {
+                                                "IA: Off"
+                                            }),
+                                    ),
+                            )
+                            // Botón abrir panel Asistente IA
+                            .when(self.ai_enabled_for_book, |this| {
+                                this.child(
+                                    div()
+                                        .id("btn-reader-ai-drawer")
+                                        .px(px(7.0))
+                                        .py(px(2.0))
+                                        .rounded(px(4.0))
+                                        .border_1()
+                                        .border_color(if self.is_ai_drawer_open {
+                                            tokens.accent
+                                        } else {
+                                            tokens.border.opacity(0.6)
+                                        })
+                                        .bg(if self.is_ai_drawer_open {
+                                            tokens.accent
+                                        } else {
+                                            tokens.bg_sunken
+                                        })
+                                        .cursor_pointer()
+                                        .hover(|s| s.opacity(0.9))
+                                        .on_click(move |_, _, cx| {
+                                            view_toggle_ai_drawer.update(cx, |this, cx| {
+                                                this.toggle_ai_drawer(cx);
+                                            });
+                                        })
+                                        .child(
+                                            div()
+                                                .text_size(px(10.0))
+                                                .font_semibold()
+                                                .text_color(if self.is_ai_drawer_open {
+                                                    tokens.accent_text
+                                                } else {
+                                                    tokens.accent
+                                                })
+                                                .child("Preguntar IA"),
+                                        ),
+                                )
+                            })
                             // Botón Marcador (Ctrl+D)
                             .child(
                                 div()
@@ -805,6 +1111,24 @@ impl Render for ReaderView {
                     .h_full()
                     .relative()
                     .overflow_hidden()
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                        if this.is_resizing_ai_drawer {
+                            let cur_x: f32 = event.position.x.into();
+                            let delta = this.ai_resize_start_x - cur_x;
+                            this.ai_drawer_width =
+                                (this.ai_resize_start_width + delta).clamp(300.0, 760.0);
+                            cx.notify();
+                        }
+                    }))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                            if this.is_resizing_ai_drawer {
+                                this.is_resizing_ai_drawer = false;
+                                cx.notify();
+                            }
+                        }),
+                    )
                     // Panel lateral desplegable: Índice (TOC) y Marcadores
                     .when(self.is_panel_open, |this| {
                         let view_tab_toc = cx.entity().clone();
@@ -1168,7 +1492,7 @@ impl Render for ReaderView {
                                                 )
                                             }),
                                     )
-                                    // Párrafos del texto ficticio
+                                    // Párrafos seleccionables del libro
                                     .child(
                                         div()
                                             .flex()
@@ -1177,14 +1501,397 @@ impl Render for ReaderView {
                                             .text_size(px(effective_font_size))
                                             .line_height(relative(line_height))
                                             .text_color(text_color)
-                                            .children(page_content.paragraphs.into_iter().map(|p| {
+                                            .children(page_content.paragraphs.into_iter().enumerate().map(|(p_idx, p)| {
+                                                let styled = match self.selection_range {
+                                                    Some((sel_p, s, e)) if sel_p == p_idx && s < e && e <= p.len() => {
+                                                        StyledText::new(p).with_default_highlights(
+                                                            &TextStyle::default(),
+                                                            [(
+                                                                s..e,
+                                                                HighlightStyle {
+                                                                    background_color: Some(tokens.accent.opacity(0.28)),
+                                                                    ..Default::default()
+                                                                },
+                                                            )],
+                                                        )
+                                                    }
+                                                    _ => StyledText::new(p),
+                                                };
+                                                let layout_down = styled.layout().clone();
+                                                let layout_move = styled.layout().clone();
+                                                self.paragraph_layouts.push(styled.layout().clone());
+
                                                 div()
-                                                    .child(p)
+                                                    .id(ElementId::from(format!("reader-para-{p_idx}")))
+                                                    .on_mouse_down(
+                                                        MouseButton::Left,
+                                                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                                            let offset = match layout_down.index_for_position(event.position) {
+                                                                Ok(i) | Err(i) => i,
+                                                            };
+                                                            this.drag_anchor = Some((p_idx, offset));
+                                                            this.selection_range = Some((p_idx, offset, offset));
+                                                            this.is_dragging_text = true;
+                                                            this.tooltip_pos = None;
+                                                            cx.notify();
+                                                        }),
+                                                    )
+                                                    .on_mouse_move(
+                                                        cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                                                            if this.is_dragging_text {
+                                                                if let Some((anchor_p, anchor_off)) = this.drag_anchor {
+                                                                    if anchor_p == p_idx {
+                                                                        let offset = match layout_move.index_for_position(event.position) {
+                                                                            Ok(i) | Err(i) => i,
+                                                                        };
+                                                                        this.selection_range = Some((
+                                                                            p_idx,
+                                                                            anchor_off.min(offset),
+                                                                            anchor_off.max(offset),
+                                                                        ));
+                                                                        cx.notify();
+                                                                    }
+                                                                }
+                                                            }
+                                                        }),
+                                                    )
+                                                    .child(styled)
                                             })),
                                     ),
                             ),
                     )
-                    // Zonas de Clic Laterales Transparentes (Izquierda y Derecha para pasar página sin obstruir el centro)
+                    // Panel lateral derecho: Asistente Inteligente de Lectura (RAG)
+                    .when(self.is_ai_drawer_open && self.ai_enabled_for_book, |this| {
+                        let view_close_ai = cx.entity().clone();
+                        let view_clear_quote = cx.entity().clone();
+                        let view_ask = cx.entity().clone();
+                        let view_q1 = cx.entity().clone();
+                        let view_q2 = cx.entity().clone();
+                        let view_q3 = cx.entity().clone();
+                        let view_jump_cite = cx.entity().clone();
+                        let current_page = self.current_page;
+                        let quote = self.ai_selected_quote.clone();
+                        let answer = self.ai_answer.clone();
+                        let err = self.ai_error.clone();
+                        let is_loading = self.is_ai_loading;
+
+                        let drawer_width = self.ai_drawer_width;
+                        let is_resizing = self.is_resizing_ai_drawer;
+
+                        this.child(
+                            div()
+                                .id("reader-ai-drawer")
+                                .w(px(drawer_width))
+                                .h_full()
+                                .relative()
+                                .flex()
+                                .flex_col()
+                                .bg(tokens.bg_elevated)
+                                .border_l_1()
+                                .border_color(tokens.border)
+                                // Tirador izquierdo para redimensionar el panel de IA
+                                .child(
+                                    div()
+                                        .id("ai-drawer-resize-handle")
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .bottom_0()
+                                        .w(px(6.0))
+                                        .cursor_col_resize()
+                                        .bg(if is_resizing {
+                                            tokens.accent.opacity(0.45)
+                                        } else {
+                                            gpui::transparent_black()
+                                        })
+                                        .hover(|s| s.bg(tokens.accent.opacity(0.35)))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                                                this.is_resizing_ai_drawer = true;
+                                                this.ai_resize_start_x = event.position.x.into();
+                                                this.ai_resize_start_width = this.ai_drawer_width;
+                                                cx.stop_propagation();
+                                                cx.notify();
+                                            }),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .justify_between()
+                                        .px(px(14.0))
+                                        .py(px(10.0))
+                                        .border_b_1()
+                                        .border_color(tokens.border)
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .child(
+                                                    div()
+                                                        .text_sm()
+                                                        .font_semibold()
+                                                        .text_color(tokens.text)
+                                                        .child("Asistente IA (Anti-Spoilers)"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(10.5))
+                                                        .text_color(tokens.text_muted)
+                                                        .child(format!("Contexto acotado hasta pág. {current_page}")),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("btn-close-ai-drawer")
+                                                .px(px(6.0))
+                                                .py(px(2.0))
+                                                .rounded(px(4.0))
+                                                .cursor_pointer()
+                                                .hover(|s| s.bg(tokens.bg_hover))
+                                                .text_xs()
+                                                .text_color(tokens.text_muted)
+                                                .on_click(move |_, _, cx| {
+                                                    view_close_ai.update(cx, |this, cx| {
+                                                        this.is_ai_drawer_open = false;
+                                                        cx.notify();
+                                                    });
+                                                })
+                                                .child("×"),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("reader-ai-scroll")
+                                        .flex_1()
+                                        .overflow_y_scroll()
+                                        .p(px(12.0))
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(10.0))
+                                        .when_some(quote, |this, q| {
+                                            this.child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap(px(4.0))
+                                                    .p(px(10.0))
+                                                    .rounded(px(6.0))
+                                                    .bg(tokens.bg_sunken)
+                                                    .border_l_2()
+                                                    .border_color(tokens.accent)
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .flex_row()
+                                                            .items_center()
+                                                            .justify_between()
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(10.0))
+                                                                    .font_semibold()
+                                                                    .text_color(tokens.accent)
+                                                                    .child("Pasaje seleccionado"),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .id("btn-clear-ai-quote")
+                                                                    .text_xs()
+                                                                    .text_color(tokens.text_muted)
+                                                                    .cursor_pointer()
+                                                                    .on_click(move |_, _, cx| {
+                                                                        view_clear_quote.update(cx, |this, cx| {
+                                                                            this.ai_selected_quote = None;
+                                                                            cx.notify();
+                                                                        });
+                                                                    })
+                                                                    .child("×"),
+                                                            ),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(tokens.text_muted)
+                                                            .child(format!("\"{q}\"")),
+                                                    ),
+                                            )
+                                        })
+                                        // Acciones rápidas
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_row()
+                                                .flex_wrap()
+                                                .gap(px(6.0))
+                                                .child(
+                                                    div()
+                                                        .id("chip-ai-catchup")
+                                                        .px(px(8.0))
+                                                        .py(px(4.0))
+                                                        .rounded_full()
+                                                        .bg(tokens.bg_sunken)
+                                                        .border_1()
+                                                        .border_color(tokens.border)
+                                                        .text_size(px(10.5))
+                                                        .text_color(tokens.text)
+                                                        .cursor_pointer()
+                                                        .hover(|s| s.border_color(tokens.accent))
+                                                        .on_click(move |_, _, cx| {
+                                                            view_q1.update(cx, |this, cx| {
+                                                                this.ask_ai(
+                                                                    Some("¿Qué ocurrió antes en la trama hasta este punto?".into()),
+                                                                    cx,
+                                                                );
+                                                            });
+                                                        })
+                                                        .child("¿Qué ocurrió antes?"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id("chip-ai-chapter")
+                                                        .px(px(8.0))
+                                                        .py(px(4.0))
+                                                        .rounded_full()
+                                                        .bg(tokens.bg_sunken)
+                                                        .border_1()
+                                                        .border_color(tokens.border)
+                                                        .text_size(px(10.5))
+                                                        .text_color(tokens.text)
+                                                        .cursor_pointer()
+                                                        .hover(|s| s.border_color(tokens.accent))
+                                                        .on_click(move |_, _, cx| {
+                                                            view_q2.update(cx, |this, cx| {
+                                                                this.ask_ai(
+                                                                    Some("Resume lo que he leído del capítulo actual hasta esta página.".into()),
+                                                                    cx,
+                                                                );
+                                                            });
+                                                        })
+                                                        .child("Resumir capítulo"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id("chip-ai-explain")
+                                                        .px(px(8.0))
+                                                        .py(px(4.0))
+                                                        .rounded_full()
+                                                        .bg(tokens.bg_sunken)
+                                                        .border_1()
+                                                        .border_color(tokens.border)
+                                                        .text_size(px(10.5))
+                                                        .text_color(tokens.text)
+                                                        .cursor_pointer()
+                                                        .hover(|s| s.border_color(tokens.accent))
+                                                        .on_click(move |_, _, cx| {
+                                                            view_q3.update(cx, |this, cx| {
+                                                                this.ask_ai(
+                                                                    Some("Explica este pasaje o personaje según lo leído hasta ahora.".into()),
+                                                                    cx,
+                                                                );
+                                                            });
+                                                        })
+                                                        .child("Explicar pasaje"),
+                                                ),
+                                        )
+                                        // Input de pregunta + Enviar
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(6.0))
+                                                .child(Input::new(&self.ai_question_input))
+                                                .child(
+                                                    div()
+                                                        .id("btn-send-ai-query")
+                                                        .py(px(7.0))
+                                                        .rounded(px(6.0))
+                                                        .bg(tokens.accent)
+                                                        .text_xs()
+                                                        .font_semibold()
+                                                        .text_center()
+                                                        .text_color(tokens.accent_text)
+                                                        .cursor_pointer()
+                                                        .hover(|s| s.opacity(0.9))
+                                                        .on_click(move |_, _, cx| {
+                                                            view_ask.update(cx, |this, cx| {
+                                                                this.ask_ai(None, cx);
+                                                            });
+                                                        })
+                                                        .child(if is_loading {
+                                                            "Consultando e indexando si es necesario..."
+                                                        } else {
+                                                            "Enviar consulta"
+                                                        }),
+                                                ),
+                                        )
+                                        .when_some(err, |this, e| {
+                                            this.child(
+                                                div()
+                                                    .p(px(10.0))
+                                                    .rounded(px(6.0))
+                                                    .bg(tokens.bg_sunken)
+                                                    .border_1()
+                                                    .border_color(tokens.danger)
+                                                    .text_size(px(13.0))
+                                                    .text_color(tokens.danger)
+                                                    .child(e),
+                                            )
+                                        })
+                                        .when_some(answer, |this, ans| {
+                                            this.child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap(px(10.0))
+                                                    .p(px(14.0))
+                                                    .rounded(px(8.0))
+                                                    .bg(tokens.bg)
+                                                    .border_1()
+                                                    .border_color(tokens.border)
+                                                    .child(render_markdown_message(
+                                                        &ans.answer,
+                                                        tokens.text,
+                                                        tokens.accent,
+                                                    ))
+                                                    .when(!ans.cited_pages.is_empty(), |this| {
+                                                        this.child(
+                                                            div()
+                                                                .flex()
+                                                                .flex_row()
+                                                                .flex_wrap()
+                                                                .gap(px(4.0))
+                                                                .pt(px(4.0))
+                                                                .border_t_1()
+                                                                .border_color(tokens.border)
+                                                                .children(ans.cited_pages.into_iter().map(|p| {
+                                                                    let view_jc = view_jump_cite.clone();
+                                                                    div()
+                                                                        .id(ElementId::from(format!("cite-p-{p}")))
+                                                                        .px(px(6.0))
+                                                                        .py(px(2.0))
+                                                                        .rounded(px(4.0))
+                                                                        .bg(tokens.bg_sunken)
+                                                                        .text_size(px(10.0))
+                                                                        .text_color(tokens.accent)
+                                                                        .cursor_pointer()
+                                                                        .on_click(move |_, _, cx| {
+                                                                            view_jc.update(cx, |this, cx| {
+                                                                                this.jump_to_page(p, cx);
+                                                                            });
+                                                                        })
+                                                                        .child(format!("Pág. {p}"))
+                                                                })),
+                                                        )
+                                                    }),
+                                            )
+                                        }),
+                                ),
+                        )
+                    })
+                    // Zonas de Clic Laterales Transparentes (estrechas para no interferir con la selección de texto)
                     .child(
                         div()
                             .id("reader-side-nav-left")
@@ -1192,7 +1899,7 @@ impl Render for ReaderView {
                             .top_0()
                             .left_0()
                             .bottom_0()
-                            .w(relative(0.20))
+                            .w(px(64.0))
                             .cursor_pointer()
                             .flex()
                             .items_center()
@@ -1225,7 +1932,7 @@ impl Render for ReaderView {
                             .top_0()
                             .right_0()
                             .bottom_0()
-                            .w(relative(0.20))
+                            .w(px(64.0))
                             .cursor_pointer()
                             .flex()
                             .items_center()
@@ -1303,5 +2010,248 @@ impl Render for ReaderView {
                             ),
                     ),
             )
+            // 4. Tooltip flotante al seleccionar texto con el ratón
+            .when_some(self.tooltip_pos, |this, pos| {
+                let top_y = (pos.y - px(46.0)).max(px(44.0));
+                let left_x = (pos.x - px(90.0)).max(px(16.0));
+                let ai_enabled = self.ai_enabled_for_book;
+
+                this.child(
+                    div()
+                        .id("selection-floating-tooltip")
+                        .absolute()
+                        .top(top_y)
+                        .left(left_x)
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.0))
+                        .px(px(8.0))
+                        .py(px(5.0))
+                        .rounded(px(10.0))
+                        .bg(tokens.bg_elevated)
+                        .border_1()
+                        .border_color(tokens.border)
+                        .shadow_lg()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation();
+                        })
+                        .when(ai_enabled, |bar| {
+                            bar.child(
+                                div()
+                                    .id("tooltip-ask-ai")
+                                    .px(px(10.0))
+                                    .py(px(4.0))
+                                    .rounded(px(6.0))
+                                    .bg(tokens.accent)
+                                    .text_xs()
+                                    .font_medium()
+                                    .text_color(tokens.bg)
+                                    .cursor_pointer()
+                                    .hover(|s| s.opacity(0.9))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_ai_with_selection(window, cx);
+                                    }))
+                                    .child("✨ Preguntar a la IA"),
+                            )
+                        })
+                        .child(
+                            div()
+                                .id("tooltip-copy-sel")
+                                .px(px(8.0))
+                                .py(px(4.0))
+                                .rounded(px(6.0))
+                                .text_xs()
+                                .text_color(tokens.text)
+                                .cursor_pointer()
+                                .hover(|s| s.bg(tokens.bg_hover))
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    this.copy_selection(cx);
+                                }))
+                                .child("Copiar"),
+                        )
+                        .child(
+                            div()
+                                .id("tooltip-dismiss-sel")
+                                .px(px(6.0))
+                                .py(px(4.0))
+                                .rounded(px(6.0))
+                                .text_xs()
+                                .text_color(tokens.text_muted)
+                                .cursor_pointer()
+                                .hover(|s| s.bg(tokens.bg_hover))
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    this.clear_selection_internal();
+                                    cx.notify();
+                                }))
+                                .child("×"),
+                        ),
+                )
+            })
     }
+}
+
+/// Renderiza respuestas de la IA limpiando Markdown básico (`###`, `**negrita**`, `*cursiva*`, listas `-`/`*`)
+/// con tipografía legible en GPUI.
+fn render_markdown_message(text: &str, text_color: Hsla, accent_color: Hsla) -> Div {
+    let base_style = TextStyle {
+        color: text_color,
+        ..Default::default()
+    };
+
+    let mut container = div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .text_size(px(14.0))
+        .line_height(relative(1.55))
+        .text_color(text_color);
+
+    for raw_line in text.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Encabezados (#, ##, ###)
+        if let Some(heading) = trimmed
+            .strip_prefix("### ")
+            .or_else(|| trimmed.strip_prefix("## "))
+            .or_else(|| trimmed.strip_prefix("# "))
+        {
+            let (clean, _) = parse_inline_markdown(heading.trim(), text_color, accent_color);
+            container = container.child(
+                div()
+                    .w_full()
+                    .pt(px(4.0))
+                    .text_size(px(15.0))
+                    .font_semibold()
+                    .text_color(text_color)
+                    .child(clean),
+            );
+            continue;
+        }
+
+        // Ítems de lista (- o *)
+        if let Some(item) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+            .or_else(|| trimmed.strip_prefix("• "))
+        {
+            let (clean, runs) = parse_inline_markdown(item.trim(), text_color, accent_color);
+            container = container.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_row()
+                    .items_start()
+                    .gap(px(6.0))
+                    .pl(px(4.0))
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_semibold()
+                            .text_color(accent_color)
+                            .child("•"),
+                    )
+                    .child(
+                        div().flex_1().child(
+                            StyledText::new(clean).with_default_highlights(&base_style, runs),
+                        ),
+                    ),
+            );
+            continue;
+        }
+
+        // Párrafo normal (con soporte para **negrita**, *cursiva* y `código`)
+        let (clean, runs) = parse_inline_markdown(trimmed, text_color, accent_color);
+        container = container.child(
+            div().w_full().child(
+                StyledText::new(clean).with_default_highlights(&base_style, runs),
+            ),
+        );
+    }
+
+    container
+}
+
+fn parse_inline_markdown(
+    input: &str,
+    bold_color: Hsla,
+    accent_color: Hsla,
+) -> (String, Vec<(std::ops::Range<usize>, HighlightStyle)>) {
+    let mut clean = String::with_capacity(input.len());
+    let mut runs = Vec::new();
+    let mut rest = input;
+
+    while !rest.is_empty() {
+        if let Some(after_open) = rest.strip_prefix("**") {
+            if let Some(end_idx) = after_open.find("**") {
+                let inner = &after_open[..end_idx];
+                let start = clean.len();
+                clean.push_str(inner);
+                let end = clean.len();
+                if start < end {
+                    runs.push((
+                        start..end,
+                        HighlightStyle {
+                            font_weight: Some(FontWeight::SEMIBOLD),
+                            color: Some(bold_color),
+                            ..Default::default()
+                        },
+                    ));
+                }
+                rest = &after_open[end_idx + 2..];
+                continue;
+            }
+        }
+
+        if let Some(after_open) = rest.strip_prefix('`') {
+            if let Some(end_idx) = after_open.find('`') {
+                let inner = &after_open[..end_idx];
+                let start = clean.len();
+                clean.push_str(inner);
+                let end = clean.len();
+                if start < end {
+                    runs.push((
+                        start..end,
+                        HighlightStyle {
+                            font_weight: Some(FontWeight::MEDIUM),
+                            color: Some(accent_color),
+                            ..Default::default()
+                        },
+                    ));
+                }
+                rest = &after_open[end_idx + 1..];
+                continue;
+            }
+        }
+
+        if let Some(after_open) = rest.strip_prefix('*') {
+            if let Some(end_idx) = after_open.find('*') {
+                if end_idx > 0 {
+                    let inner = &after_open[..end_idx];
+                    let start = clean.len();
+                    clean.push_str(inner);
+                    let end = clean.len();
+                    runs.push((
+                        start..end,
+                        HighlightStyle {
+                            font_style: Some(FontStyle::Italic),
+                            ..Default::default()
+                        },
+                    ));
+                    rest = &after_open[end_idx + 1..];
+                    continue;
+                }
+            }
+        }
+
+        let ch = rest.chars().next().unwrap();
+        clean.push(ch);
+        rest = &rest[ch.len_utf8()..];
+    }
+
+    (clean, runs)
 }

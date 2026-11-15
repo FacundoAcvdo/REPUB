@@ -1,7 +1,9 @@
 use epub_core::db::{Database, SettingsRepository};
 use epub_core::domain::settings::{
-    AnimationSpeed, AppSettings, CornerRadiusStyle, ReduceMotion,
+    AnimationSpeed, AppSettings, CornerRadiusStyle, EmbeddingSource, LocalEmbeddingModelInfo,
+    ReduceMotion,
 };
+use epub_core::services::{AiClient, LocalEmbeddings, RagService};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -51,7 +53,10 @@ impl SettingsTab {
 pub struct SettingsView {
     active_tab: SettingsTab,
     settings: AppSettings,
-    test_connection_msg: Option<&'static str>,
+    test_connection_msg: Option<String>,
+    embedding_status_msg: Option<String>,
+    is_downloading_model: bool,
+    pending_model_switch: Option<(EmbeddingSource, Option<String>)>,
     is_font_select_open: bool,
     model_input: Entity<InputState>,
     api_key_input: Entity<InputState>,
@@ -102,6 +107,9 @@ impl SettingsView {
             active_tab: SettingsTab::General,
             settings,
             test_connection_msg: None,
+            embedding_status_msg: None,
+            is_downloading_model: false,
+            pending_model_switch: None,
             is_font_select_open: false,
             model_input,
             api_key_input,
@@ -114,6 +122,144 @@ impl SettingsView {
                 let _ = SettingsRepository::save_settings(db.conn(), &self.settings);
             }
         }
+    }
+
+    fn run_test_connection(&mut self, cx: &mut Context<Self>) {
+        let ai_settings = self.settings.ai.clone();
+        self.test_connection_msg = Some("Probando conexión con el proveedor...".into());
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let res = cx
+                .background_executor()
+                .spawn(async move { AiClient::test_connection(&ai_settings) })
+                .await;
+
+            let _ = this.update(cx, |view, cx| {
+                view.test_connection_msg = Some(match res {
+                    Ok(ok) => format!("✓ {ok}"),
+                    Err(err) => format!("✗ {err}"),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn current_index_info() -> (Option<epub_core::services::IndexSummary>, u64) {
+        let summary = Database::default_db_path()
+            .and_then(|p| Database::open(p).ok())
+            .and_then(|db| RagService::current_index_summary(db.conn()).ok())
+            .flatten();
+        let disk_bytes = LocalEmbeddings::downloaded_bytes();
+        (summary, disk_bytes)
+    }
+
+    fn request_embedding_config(
+        &mut self,
+        source: EmbeddingSource,
+        local_model: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let (summary, _) = Self::current_index_info();
+        if let Some(idx) = summary {
+            let new_model_label = match source {
+                EmbeddingSource::Local => local_model.clone().unwrap_or_default(),
+                EmbeddingSource::Cloud => format!("{}-embeddings", self.settings.ai.provider),
+                EmbeddingSource::Unconfigured => String::new(),
+            };
+            if idx.embedding_model != new_model_label && idx.indexed_books > 0 {
+                self.pending_model_switch = Some((source, local_model));
+                self.embedding_status_msg = Some(format!(
+                    "Ya hay {} libro(s) indexados con '{}'. Cambiar de modelo requiere borrar o reindexar la base actual.",
+                    idx.indexed_books, idx.embedding_model
+                ));
+                cx.notify();
+                return;
+            }
+        }
+
+        self.apply_embedding_config(source, local_model, false, cx);
+    }
+
+    fn apply_embedding_config(
+        &mut self,
+        source: EmbeddingSource,
+        local_model: Option<String>,
+        clear_existing_index: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_model_switch = None;
+        if clear_existing_index {
+            if let Some(db_path) = Database::default_db_path() {
+                if let Ok(mut db) = Database::open(db_path) {
+                    let _ = RagService::clear_index_only(db.conn_mut());
+                }
+            }
+        }
+
+        self.settings.ai.embedding_source = source;
+        self.settings.ai.local_embedding_model = local_model.clone();
+        self.persist();
+
+        if source == EmbeddingSource::Local {
+            if let Some(model_id) = local_model {
+                self.is_downloading_model = true;
+                self.embedding_status_msg = Some(format!(
+                    "Descargando modelo '{}' en segundo plano... La primera vez puede demorar unos minutos.",
+                    model_id
+                ));
+                cx.notify();
+
+                cx.spawn(async move |this, cx| {
+                    let res = cx
+                        .background_executor()
+                        .spawn(async move { LocalEmbeddings::ensure_downloaded(&model_id) })
+                        .await;
+
+                    let _ = this.update(cx, |view, cx| {
+                        view.is_downloading_model = false;
+                        view.embedding_status_msg = Some(match res {
+                            Ok(_) => "✓ Modelo local listo en disco para indexación RAG.".into(),
+                            Err(e) => format!("✗ Error al descargar el modelo: {e}"),
+                        });
+                        cx.notify();
+                    });
+                })
+                .detach();
+                return;
+            }
+        } else if source == EmbeddingSource::Cloud {
+            self.embedding_status_msg =
+                Some("✓ Embeddings configurados vía API Cloud del proveedor.".into());
+        } else {
+            self.embedding_status_msg = None;
+        }
+        cx.notify();
+    }
+
+    fn clear_all_models_and_embeddings(&mut self, cx: &mut Context<Self>) {
+        self.pending_model_switch = None;
+        if let Some(db_path) = Database::default_db_path() {
+            if let Ok(mut db) = Database::open(db_path) {
+                match RagService::clear_all_embeddings_and_models(db.conn_mut()) {
+                    Ok(freed) => {
+                        let mb = freed as f64 / (1024.0 * 1024.0);
+                        self.settings.ai.embedding_source = EmbeddingSource::Unconfigured;
+                        self.settings.ai.local_embedding_model = None;
+                        self.persist();
+                        self.embedding_status_msg = Some(format!(
+                            "✓ Modelos locales y embeddings borrados ({:.1} MB liberados).",
+                            mb
+                        ));
+                    }
+                    Err(e) => {
+                        self.embedding_status_msg = Some(format!("✗ Error al limpiar: {e}"));
+                    }
+                }
+            }
+        }
+        cx.notify();
     }
 
     pub fn set_tab(&mut self, tab: SettingsTab, cx: &mut Context<Self>) {
@@ -710,7 +856,13 @@ impl SettingsView {
     ) -> AnyElement {
         let view = cx.entity().clone();
         let current_provider = self.settings.ai.provider.clone();
-        let test_msg = self.test_connection_msg;
+        let test_msg = self.test_connection_msg.clone();
+        let current_emb_source = self.settings.ai.embedding_source;
+        let current_local_model = self.settings.ai.local_embedding_model.clone();
+        let emb_status = self.embedding_status_msg.clone();
+        let is_downloading = self.is_downloading_model;
+        let pending_switch = self.pending_model_switch.clone();
+        let (index_summary, disk_bytes) = Self::current_index_info();
 
         let providers = [
             ("OpenAI", "openai"),
@@ -942,8 +1094,7 @@ impl SettingsView {
                                         let view_test = view.clone();
                                         move |_, _, cx| {
                                             view_test.update(cx, |this, cx| {
-                                                this.test_connection_msg = Some("✓ Conexión establecida con éxito con el proveedor.");
-                                                cx.notify();
+                                                this.run_test_connection(cx);
                                             });
                                         }
                                     })
@@ -967,16 +1118,392 @@ impl SettingsView {
                                         .rounded(radius)
                                         .bg(tokens.bg_sunken)
                                         .border_1()
-                                        .border_color(tokens.success)
+                                        .border_color(if msg.starts_with('✗') {
+                                            tokens.danger
+                                        } else {
+                                            tokens.success
+                                        })
                                         .text_xs()
                                         .font_medium()
-                                        .text_color(tokens.success)
+                                        .text_color(if msg.starts_with('✗') {
+                                            tokens.danger
+                                        } else {
+                                            tokens.success
+                                        })
                                         .child(msg),
                                 )
                             }),
                     ),
             )
-            // Section 2: Privacy Guarantee Banner (Fixed wrapping!)
+            // Section 2: Motor de Embeddings (Indexación RAG)
+            .child(
+                SettingsSection::new(
+                    "sec-embeddings",
+                    "Motor de Embeddings (Indexación RAG)",
+                    tokens,
+                    radius,
+                )
+                .icon(IconName::Layers)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .p(px(16.0))
+                        .gap(px(12.0))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(tokens.text_muted)
+                                .child(
+                                    "Ningún modelo se descarga al inicio. Elige cómo vectorizar tus libros; \
+                                     una vez indexados, cambiar de modelo requiere reindexar o borrar la base actual.",
+                                ),
+                        )
+                        // Mode selector: Local vs Cloud
+                        .child({
+                            let view_local = view.clone();
+                            let view_cloud = view.clone();
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap(px(10.0))
+                                .child(
+                                    div()
+                                        .id("emb-mode-local")
+                                        .px(px(14.0))
+                                        .py(px(8.0))
+                                        .rounded(radius)
+                                        .cursor_pointer()
+                                        .border_1()
+                                        .border_color(if current_emb_source == EmbeddingSource::Local {
+                                            tokens.accent
+                                        } else {
+                                            tokens.border
+                                        })
+                                        .bg(if current_emb_source == EmbeddingSource::Local {
+                                            tokens.bg_sunken
+                                        } else {
+                                            tokens.bg_elevated
+                                        })
+                                        .text_xs()
+                                        .font_semibold()
+                                        .text_color(if current_emb_source == EmbeddingSource::Local {
+                                            tokens.accent
+                                        } else {
+                                            tokens.text
+                                        })
+                                        .on_click(move |_, _, cx| {
+                                            view_local.update(cx, |this, cx| {
+                                                if this.settings.ai.embedding_source
+                                                    != EmbeddingSource::Local
+                                                {
+                                                    this.settings.ai.embedding_source =
+                                                        EmbeddingSource::Local;
+                                                    this.persist();
+                                                    cx.notify();
+                                                }
+                                            });
+                                        })
+                                        .child("Local en tu PC (ONNX / GPU-CPU)"),
+                                )
+                                .child(
+                                    div()
+                                        .id("emb-mode-cloud")
+                                        .px(px(14.0))
+                                        .py(px(8.0))
+                                        .rounded(radius)
+                                        .cursor_pointer()
+                                        .border_1()
+                                        .border_color(if current_emb_source == EmbeddingSource::Cloud {
+                                            tokens.accent
+                                        } else {
+                                            tokens.border
+                                        })
+                                        .bg(if current_emb_source == EmbeddingSource::Cloud {
+                                            tokens.bg_sunken
+                                        } else {
+                                            tokens.bg_elevated
+                                        })
+                                        .text_xs()
+                                        .font_semibold()
+                                        .text_color(if current_emb_source == EmbeddingSource::Cloud {
+                                            tokens.accent
+                                        } else {
+                                            tokens.text
+                                        })
+                                        .on_click(move |_, _, cx| {
+                                            view_cloud.update(cx, |this, cx| {
+                                                this.request_embedding_config(
+                                                    EmbeddingSource::Cloud,
+                                                    None,
+                                                    cx,
+                                                );
+                                            });
+                                        })
+                                        .child("Cloud (API del proveedor)"),
+                                )
+                        })
+                        // Local models list (only shown when Local is selected)
+                        .when(current_emb_source == EmbeddingSource::Local, |this| {
+                            this.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(8.0))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(tokens.text_muted)
+                                            .child(
+                                                "⚠ Aviso: Al seleccionar un modelo se descargará a tu disco (la primera vez puede demorar unos minutos) y podrá usar GPU o CPU según disponibilidad.",
+                                            ),
+                                    )
+                                    .children(LocalEmbeddingModelInfo::all().iter().map(|info| {
+                                        let m_id = info.id.to_string();
+                                        let is_selected = current_local_model.as_deref() == Some(info.id);
+                                        let view_m = view.clone();
+                                        div()
+                                            .id(ElementId::from(format!("local-emb-{}", info.id)))
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .justify_between()
+                                            .p(px(12.0))
+                                            .rounded(radius)
+                                            .border_1()
+                                            .border_color(if is_selected {
+                                                tokens.accent
+                                            } else {
+                                                tokens.border
+                                            })
+                                            .bg(if is_selected {
+                                                tokens.bg_sunken
+                                            } else {
+                                                tokens.bg
+                                            })
+                                            .cursor_pointer()
+                                            .hover(|s| s.border_color(tokens.accent))
+                                            .on_click(move |_, _, cx| {
+                                                if !is_downloading {
+                                                    let id = m_id.clone();
+                                                    view_m.update(cx, |this, cx| {
+                                                        this.request_embedding_config(
+                                                            EmbeddingSource::Local,
+                                                            Some(id),
+                                                            cx,
+                                                        );
+                                                    });
+                                                }
+                                            })
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap(px(2.0))
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .flex_row()
+                                                            .items_center()
+                                                            .gap(px(8.0))
+                                                            .child(
+                                                                div()
+                                                                    .text_xs()
+                                                                    .font_semibold()
+                                                                    .text_color(tokens.text)
+                                                                    .child(info.display_name),
+                                                            )
+                                                            .when(info.recommended, |this| {
+                                                                this.child(
+                                                                    div()
+                                                                        .px(px(6.0))
+                                                                        .py(px(1.0))
+                                                                        .rounded_full()
+                                                                        .bg(tokens.accent)
+                                                                        .text_size(px(10.0))
+                                                                        .font_bold()
+                                                                        .text_color(tokens.accent_text)
+                                                                        .child("Recomendado"),
+                                                                )
+                                                            }),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(11.0))
+                                                            .text_color(tokens.text_muted)
+                                                            .child(format!(
+                                                                "{} • {} dims • {}",
+                                                                info.approx_size_label,
+                                                                info.dimensions,
+                                                                info.languages
+                                                            )),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(11.0))
+                                                            .text_color(tokens.text_muted)
+                                                            .child(info.description),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_semibold()
+                                                    .text_color(if is_selected {
+                                                        tokens.accent
+                                                    } else {
+                                                        tokens.text_muted
+                                                    })
+                                                    .child(if is_selected {
+                                                        "Activo"
+                                                    } else {
+                                                        "Descargar y usar"
+                                                    }),
+                                            )
+                                    })),
+                            )
+                        })
+                        // Confirmation banner when switching models on existing index
+                        .when_some(pending_switch, |this, (src, model)| {
+                            let view_confirm = view.clone();
+                            let view_cancel = view.clone();
+                            this.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(8.0))
+                                    .p(px(12.0))
+                                    .rounded(radius)
+                                    .bg(tokens.bg_sunken)
+                                    .border_1()
+                                    .border_color(tokens.accent)
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_medium()
+                                            .text_color(tokens.text)
+                                            .child(
+                                                "Cambiar de modelo invalida los embeddings actuales. ¿Deseas borrar el índice actual para usar el nuevo modelo?",
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .gap(px(8.0))
+                                            .child(
+                                                div()
+                                                    .id("btn-confirm-reindex-switch")
+                                                    .px(px(12.0))
+                                                    .py(px(6.0))
+                                                    .rounded(px(4.0))
+                                                    .bg(tokens.accent)
+                                                    .text_xs()
+                                                    .font_semibold()
+                                                    .text_color(tokens.accent_text)
+                                                    .cursor_pointer()
+                                                    .on_click(move |_, _, cx| {
+                                                        let m = model.clone();
+                                                        view_confirm.update(cx, |this, cx| {
+                                                            this.apply_embedding_config(
+                                                                src, m, true, cx,
+                                                            );
+                                                        });
+                                                    })
+                                                    .child("Borrar índice y cambiar"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("btn-cancel-reindex-switch")
+                                                    .px(px(12.0))
+                                                    .py(px(6.0))
+                                                    .rounded(px(4.0))
+                                                    .bg(tokens.bg_elevated)
+                                                    .border_1()
+                                                    .border_color(tokens.border)
+                                                    .text_xs()
+                                                    .text_color(tokens.text)
+                                                    .cursor_pointer()
+                                                    .on_click(move |_, _, cx| {
+                                                        view_cancel.update(cx, |this, cx| {
+                                                            this.pending_model_switch = None;
+                                                            this.embedding_status_msg = None;
+                                                            cx.notify();
+                                                        });
+                                                    })
+                                                    .child("Cancelar"),
+                                            ),
+                                    ),
+                            )
+                        })
+                        // Status message
+                        .when_some(emb_status, |this, msg| {
+                            this.child(
+                                div()
+                                    .px(px(12.0))
+                                    .py(px(8.0))
+                                    .rounded(radius)
+                                    .bg(tokens.bg_sunken)
+                                    .border_1()
+                                    .border_color(tokens.border)
+                                    .text_xs()
+                                    .text_color(tokens.text)
+                                    .child(msg),
+                            )
+                        })
+                        // Index & storage footer + delete button
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .pt(px(8.0))
+                                .border_t_1()
+                                .border_color(tokens.border)
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(tokens.text_muted)
+                                        .child(match index_summary {
+                                            Some(s) => format!(
+                                                "Índice: {} libro(s), {} fragmentos • Modelos en disco: {:.1} MB",
+                                                s.indexed_books,
+                                                s.total_chunks,
+                                                disk_bytes as f64 / (1024.0 * 1024.0)
+                                            ),
+                                            None => format!(
+                                                "Sin libros indexados • Modelos en disco: {:.1} MB",
+                                                disk_bytes as f64 / (1024.0 * 1024.0)
+                                            ),
+                                        }),
+                                )
+                                .child({
+                                    let view_clear = view.clone();
+                                    div()
+                                        .id("btn-clear-models-embeddings")
+                                        .px(px(12.0))
+                                        .py(px(6.0))
+                                        .rounded(px(4.0))
+                                        .bg(tokens.bg_sunken)
+                                        .border_1()
+                                        .border_color(tokens.danger.opacity(0.6))
+                                        .text_xs()
+                                        .font_medium()
+                                        .text_color(tokens.danger)
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(tokens.bg_hover))
+                                        .on_click(move |_, _, cx| {
+                                            view_clear.update(cx, |this, cx| {
+                                                this.clear_all_models_and_embeddings(cx);
+                                            });
+                                        })
+                                        .child("Borrar modelos y embeddings")
+                                }),
+                        ),
+                ),
+            )
+            // Section 3: Privacy Guarantee Banner (Fixed wrapping!)
             .child(
                 div()
                     .w_full()
