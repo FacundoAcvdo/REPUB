@@ -195,6 +195,13 @@ mod tests {
         let prog2 = ProgressRepository::get_progress(db.conn(), "b2").unwrap().unwrap();
         assert_eq!(prog2.status, "Completed");
 
+        // Si el lector repagina a un total distinto, `books.total_pages` se sincroniza.
+        ProgressRepository::update_page(db.conn(), "b2", 180, 10, 180, 2100).unwrap();
+        let synced = BookRepository::get_by_id(db.conn(), "b2").unwrap().unwrap();
+        assert_eq!(synced.book.total_pages, 180);
+        assert!(synced.book.is_completed());
+        assert!((synced.book.progress_pct() - 1.0).abs() < 0.001);
+
         let recent = ProgressRepository::get_most_recent_book(db.conn()).unwrap().unwrap();
         assert_eq!(recent.book.id, "b2");
 
@@ -229,5 +236,69 @@ mod tests {
         SettingsRepository::save_settings(db.conn(), &custom).unwrap();
         let reloaded = SettingsRepository::load_settings(db.conn()).unwrap();
         assert_eq!(reloaded, custom);
+    }
+
+    #[test]
+    fn test_filter_favorites() {
+        let mut db = Database::open_in_memory().unwrap();
+        let b1 = sample_book("fav-1", "Dune", "Frank Herbert", 400, 0);
+        let b2 = sample_book("fav-2", "Fundación", "Isaac Asimov", 300, 0);
+
+        BookRepository::upsert(db.conn_mut(), &b1, None, None, "es").unwrap();
+        BookRepository::upsert(db.conn_mut(), &b2, None, None, "es").unwrap();
+
+        assert!(ProgressRepository::toggle_favorite(db.conn(), "fav-1").unwrap());
+
+        let favs =
+            BookRepository::list(db.conn(), BookFilter::Favorites, BookSort::TitleAsc, "").unwrap();
+        assert_eq!(favs.len(), 1);
+        assert_eq!(favs[0].book.id, "fav-1");
+        assert!(favs[0].is_favorite);
+    }
+
+    #[test]
+    fn test_legacy_schema_upgrades_missing_columns() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE reading_progress (
+                book_id TEXT PRIMARY KEY,
+                current_page INTEGER NOT NULL DEFAULT 0
+            );",
+        )
+        .unwrap();
+
+        migrations::run_migrations(&mut conn).unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM reading_progress WHERE last_read_at IS NULL AND status = 'Unread' AND is_favorite = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_legacy_integer_pk_rebuilds_for_text_ids() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE books (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL
+            );
+            CREATE TABLE reading_progress (
+                book_id INTEGER PRIMARY KEY,
+                current_page INTEGER NOT NULL DEFAULT 0
+            );",
+        )
+        .unwrap();
+
+        migrations::run_migrations(&mut conn).unwrap();
+
+        let b = sample_book("uuid-text-id", "El Aleph", "Jorge Luis Borges", 180, 0);
+        BookRepository::upsert(&mut conn, &b, None, None, "es").unwrap();
+        let loaded = BookRepository::get_by_id(&conn, "uuid-text-id").unwrap();
+        assert!(loaded.is_some());
     }
 }

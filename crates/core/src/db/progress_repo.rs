@@ -92,6 +92,10 @@ impl ProgressRepository {
             )));
         }
 
+        if total_pages > 0 {
+            BookRepository::update_total_pages(conn, book_id, total_pages)?;
+        }
+
         Ok(())
     }
 

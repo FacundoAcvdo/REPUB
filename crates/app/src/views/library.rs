@@ -1,6 +1,9 @@
+use std::collections::HashMap;
 use std::rc::Rc;
+use epub_core::db::{BookRepository, Database, ProgressRepository};
 use epub_core::domain::book::{Book, BookFilter, BookSort};
-use epub_core::mock::books::{generate_mock_catalog, mock_books};
+use epub_core::mock::books::generate_mock_catalog;
+use epub_core::services::{BookImportService, LibraryStorage};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::input::{InputEvent, InputState};
@@ -11,9 +14,17 @@ use crate::components::book_card::{BookCard, BookRow};
 use crate::components::library_toolbar::LibraryToolbar;
 use crate::theme::state::ThemeState;
 
+#[derive(Clone, Default)]
+struct BookUiMeta {
+    cover_path: Option<String>,
+    is_favorite: bool,
+}
+
 pub struct LibraryView {
     books: Vec<Book>,
     filtered_books: Vec<Book>,
+    stored_meta: HashMap<String, BookUiMeta>,
+    total_db_count: usize,
     search_input: Entity<InputState>,
     search_query: String,
     filter: BookFilter,
@@ -35,16 +46,16 @@ impl LibraryView {
         cx.subscribe(&search_input, |this, input, event: &InputEvent, cx| {
             if let InputEvent::Change = event {
                 this.search_query = input.read(cx).value().to_string();
-                this.update_filtered_books();
-                cx.notify();
+                this.refresh_catalog(cx);
             }
         })
         .detach();
 
-        let initial_books = mock_books();
         let mut this = Self {
-            books: initial_books,
+            books: Vec::new(),
             filtered_books: Vec::new(),
+            stored_meta: HashMap::new(),
+            total_db_count: 0,
             search_input,
             search_query: String::new(),
             filter: BookFilter::All,
@@ -56,8 +67,59 @@ impl LibraryView {
             list_scroll_handle: UniformListScrollHandle::new(),
             on_open_book: None,
         };
-        this.update_filtered_books();
+        this.load_from_sqlite();
         this
+    }
+
+    fn open_default_db() -> Option<Database> {
+        Database::default_db_path().and_then(|path| Database::open(path).ok())
+    }
+
+    fn load_from_sqlite(&mut self) {
+        let Some(db) = Self::open_default_db() else {
+            return;
+        };
+
+        let total: usize = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM books", [], |row| row.get(0))
+            .unwrap_or(0);
+        self.total_db_count = total;
+
+        if let Ok(stored_books) =
+            BookRepository::list(db.conn(), self.filter, self.sort, &self.search_query)
+        {
+            self.stored_meta.clear();
+            let mut books = Vec::with_capacity(stored_books.len());
+            for item in stored_books {
+                self.stored_meta.insert(
+                    item.book.id.clone(),
+                    BookUiMeta {
+                        cover_path: item.cover_path,
+                        is_favorite: item.is_favorite,
+                    },
+                );
+                books.push(item.book);
+            }
+            self.filtered_books = books.clone();
+            self.books = books;
+        }
+    }
+
+    pub fn reload_from_db(&mut self, cx: &mut Context<Self>) {
+        if !self.is_1000_mode {
+            self.load_from_sqlite();
+            cx.notify();
+        }
+    }
+
+    fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
+        if self.is_1000_mode {
+            self.update_filtered_books();
+        } else {
+            self.load_from_sqlite();
+        }
+        cx.notify();
     }
 
     pub fn set_on_open_book(&mut self, handler: impl Fn(Book, &mut Window, &mut App) + 'static) {
@@ -116,8 +178,7 @@ impl LibraryView {
     pub fn set_filter(&mut self, filter: BookFilter, cx: &mut Context<Self>) {
         if self.filter != filter {
             self.filter = filter;
-            self.update_filtered_books();
-            cx.notify();
+            self.refresh_catalog(cx);
         }
     }
 
@@ -129,8 +190,7 @@ impl LibraryView {
             BookSort::RecentProgress => BookSort::TotalPagesDesc,
             BookSort::TotalPagesDesc => BookSort::TitleAsc,
         };
-        self.update_filtered_books();
-        cx.notify();
+        self.refresh_catalog(cx);
     }
 
     pub fn toggle_view_mode(&mut self, is_grid: bool, cx: &mut Context<Self>) {
@@ -142,18 +202,123 @@ impl LibraryView {
         self.is_1000_mode = !self.is_1000_mode;
         if self.is_1000_mode {
             self.books = generate_mock_catalog(1000);
+            self.stored_meta.clear();
             self.notification = Some("Catálogo de 1.000 libros cargado. Grilla virtualizada activa.".into());
+            self.update_filtered_books();
+            cx.notify();
         } else {
-            self.books = mock_books();
             self.notification = None;
+            self.load_from_sqlite();
+            cx.notify();
         }
-        self.update_filtered_books();
-        cx.notify();
     }
 
-    pub fn show_import_notice(&mut self, cx: &mut Context<Self>) {
-        self.notification = Some("Importar EPUB estará disponible en la siguiente fase".into());
-        cx.notify();
+    pub fn toggle_favorite(&mut self, book_id: &str, cx: &mut Context<Self>) {
+        if self.is_1000_mode {
+            let entry = self.stored_meta.entry(book_id.to_string()).or_default();
+            entry.is_favorite = !entry.is_favorite;
+            cx.notify();
+            return;
+        }
+
+        if let Some(db) = Self::open_default_db() {
+            if ProgressRepository::toggle_favorite(db.conn(), book_id).is_ok() {
+                self.load_from_sqlite();
+                cx.notify();
+            }
+        }
+    }
+
+    pub fn import_epub_dialog(&mut self, cx: &mut Context<Self>) {
+        let paths_rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Seleccionar libros EPUB".into()),
+        });
+
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = paths_rx.await else {
+                return;
+            };
+
+            let epub_paths: Vec<std::path::PathBuf> = paths
+                .into_iter()
+                .filter(|p| {
+                    p.extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| ext.eq_ignore_ascii_case("epub"))
+                        .unwrap_or(false)
+                })
+                .collect();
+
+            if epub_paths.is_empty() {
+                let _ = this.update(cx, |view, cx| {
+                    view.notification =
+                        Some("Solo se admiten archivos con extensión .epub.".into());
+                    cx.notify();
+                });
+                return;
+            }
+
+            let import_result = cx
+                .background_executor()
+                .spawn(async move {
+                    let db_path = Database::default_db_path()
+                        .ok_or_else(|| "No se pudo resolver la ruta de la base de datos".to_string())?;
+                    let mut db = Database::open(db_path).map_err(|e| e.to_string())?;
+                    let storage = LibraryStorage::default_storage()
+                        .map_err(|e| e.to_string())?;
+
+                    let mut imported = 0usize;
+                    let mut last_title = String::new();
+                    let mut errors = Vec::new();
+
+                    for path in epub_paths {
+                        match BookImportService::import_file(&mut db, &storage, &path) {
+                            Ok(stored) => {
+                                imported += 1;
+                                last_title = stored.book.title;
+                            }
+                            Err(e) => errors.push(e.to_string()),
+                        }
+                    }
+
+                    Ok::<_, String>((imported, last_title, errors))
+                })
+                .await;
+
+            let _ = this.update(cx, |view, cx| {
+                match import_result {
+                    Ok((imported, last_title, errors)) => {
+                        view.is_1000_mode = false;
+                        view.load_from_sqlite();
+                        view.notification = if imported == 1 && errors.is_empty() {
+                            Some(format!("Libro importado: \"{}\"", last_title))
+                        } else if imported > 0 && errors.is_empty() {
+                            Some(format!("{} libros importados correctamente.", imported))
+                        } else if imported > 0 {
+                            Some(format!(
+                                "{} importados, {} con error ({}).",
+                                imported,
+                                errors.len(),
+                                errors[0]
+                            ))
+                        } else {
+                            Some(format!(
+                                "No se pudo importar: {}",
+                                errors.first().map(String::as_str).unwrap_or("error desconocido")
+                            ))
+                        };
+                    }
+                    Err(err) => {
+                        view.notification = Some(format!("Error al importar: {}", err));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub fn clear_notification(&mut self, cx: &mut Context<Self>) {
@@ -167,8 +332,7 @@ impl LibraryView {
         self.search_input.update(cx, |input, cx| {
             input.set_value("", window, cx);
         });
-        self.update_filtered_books();
-        cx.notify();
+        self.refresh_catalog(cx);
     }
 }
 
@@ -178,7 +342,11 @@ impl Render for LibraryView {
         let tokens = *theme_state.tokens();
         let radius = theme_state.radius();
 
-        let total_count = self.books.len();
+        let total_count = if self.is_1000_mode {
+            self.books.len()
+        } else {
+            self.total_db_count
+        };
         let filtered_count = self.filtered_books.len();
 
         let view_entity = cx.entity().clone();
@@ -215,7 +383,7 @@ impl Render for LibraryView {
             view_1000.update(cx, |this, cx| this.toggle_1000_catalog(cx));
         })
         .on_import(move |_, cx| {
-            view_import.update(cx, |this, cx| this.show_import_notice(cx));
+            view_import.update(cx, |this, cx| this.import_epub_dialog(cx));
         });
 
         let notification_element = self.notification.as_ref().map(|msg| {
@@ -270,7 +438,8 @@ impl Render for LibraryView {
 
         // Content Area: Empty State vs Grid vs List
         let content_element = if filtered_count == 0 {
-            let view_reset = view_entity.clone();
+            let view_action = view_entity.clone();
+            let is_library_empty = total_count == 0;
             div()
                 .flex_1()
                 .flex()
@@ -293,35 +462,75 @@ impl Render for LibraryView {
                         .text_lg()
                         .font_semibold()
                         .text_color(tokens.text)
-                        .child("No se encontraron libros"),
+                        .child(if is_library_empty {
+                            "Tu biblioteca está vacía"
+                        } else {
+                            "No se encontraron libros"
+                        }),
                 )
                 .child(
                     div()
                         .text_sm()
                         .text_color(tokens.text_muted)
-                        .child("Prueba modificando el término de búsqueda o seleccionando otro filtro."),
+                        .child(if is_library_empty {
+                            "Importa archivos .epub desde tu computadora para comenzar a leer."
+                        } else {
+                            "Prueba modificando el término de búsqueda o seleccionando otro filtro."
+                        }),
                 )
                 .child(
                     div()
-                        .id("btn-reset-filters")
+                        .id(if is_library_empty {
+                            "btn-empty-import"
+                        } else {
+                            "btn-reset-filters"
+                        })
                         .mt(px(8.0))
                         .px(px(16.0))
                         .py(px(8.0))
                         .rounded(radius)
-                        .bg(tokens.bg_sunken)
+                        .bg(if is_library_empty {
+                            tokens.accent
+                        } else {
+                            tokens.bg_sunken
+                        })
                         .border_1()
-                        .border_color(tokens.border)
-                        .hover(|s| s.bg(tokens.bg_hover))
+                        .border_color(if is_library_empty {
+                            tokens.accent
+                        } else {
+                            tokens.border
+                        })
+                        .hover(|s| {
+                            if is_library_empty {
+                                s.opacity(0.9)
+                            } else {
+                                s.bg(tokens.bg_hover)
+                            }
+                        })
                         .cursor_pointer()
                         .on_click(move |_, window, cx| {
-                            view_reset.update(cx, |this, cx| this.clear_filters(window, cx));
+                            view_action.update(cx, |this, cx| {
+                                if is_library_empty {
+                                    this.import_epub_dialog(cx);
+                                } else {
+                                    this.clear_filters(window, cx);
+                                }
+                            });
                         })
                         .child(
                             div()
                                 .text_sm()
                                 .font_medium()
-                                .text_color(tokens.accent)
-                                .child("Restablecer filtros"),
+                                .text_color(if is_library_empty {
+                                    tokens.accent_text
+                                } else {
+                                    tokens.accent
+                                })
+                                .child(if is_library_empty {
+                                    "+ Importar EPUB"
+                                } else {
+                                    "Restablecer filtros"
+                                }),
                         ),
                 )
                 .into_any_element()
@@ -335,7 +544,9 @@ impl Render for LibraryView {
 
             let row_count = (filtered_count + items_per_row - 1) / items_per_row;
             let books_rc = Rc::new(self.filtered_books.clone());
+            let meta_rc = Rc::new(self.stored_meta.clone());
             let on_open_book = self.on_open_book.clone();
+            let view_fav = view_entity.clone();
 
             uniform_list(
                 "library-virtual-grid",
@@ -348,6 +559,8 @@ impl Render for LibraryView {
                         let row_books = &books_rc[start..end];
 
                         let on_open_book_row = on_open_book.clone();
+                        let meta_row = meta_rc.clone();
+                        let view_fav_row = view_fav.clone();
                         let row_div = div()
                             .id(ElementId::from(format!("book-row-{}", row_idx)))
                             .h(px(320.0))
@@ -358,16 +571,25 @@ impl Render for LibraryView {
                             .children(row_books.iter().map(|book| {
                                 let book_for_click = book.clone();
                                 let cb = on_open_book_row.clone();
+                                let meta = meta_row.get(&book.id).cloned().unwrap_or_default();
+                                let view_fav_card = view_fav_row.clone();
                                 BookCard::new(
                                     ElementId::from(book.id.clone()),
                                     book.clone(),
                                     tokens,
                                     radius,
                                 )
+                                .cover_path(meta.cover_path)
+                                .is_favorite(meta.is_favorite)
                                 .on_click(move |_, window, cx| {
                                     if let Some(ref handler) = cb {
                                         handler(book_for_click.clone(), window, cx);
                                     }
+                                })
+                                .on_toggle_favorite(move |id, _, cx| {
+                                    view_fav_card.update(cx, |this, cx| {
+                                        this.toggle_favorite(id, cx);
+                                    });
                                 })
                             }));
 
@@ -383,7 +605,9 @@ impl Render for LibraryView {
         } else {
             // Virtualized List mode: 1 book per row
             let books_rc = Rc::new(self.filtered_books.clone());
+            let meta_rc = Rc::new(self.stored_meta.clone());
             let on_open_book = self.on_open_book.clone();
+            let view_fav = view_entity.clone();
 
             uniform_list(
                 "library-virtual-list",
@@ -394,6 +618,8 @@ impl Render for LibraryView {
                         if let Some(book) = books_rc.get(idx) {
                             let book_for_click = book.clone();
                             let cb = on_open_book.clone();
+                            let meta = meta_rc.get(&book.id).cloned().unwrap_or_default();
+                            let view_fav_row = view_fav.clone();
                             let row_element = div()
                                 .id(ElementId::from(format!("book-list-row-{}", idx)))
                                 .h(px(76.0))
@@ -405,10 +631,17 @@ impl Render for LibraryView {
                                         tokens,
                                         radius,
                                     )
+                                    .cover_path(meta.cover_path)
+                                    .is_favorite(meta.is_favorite)
                                     .on_click(move |_, window, cx| {
                                         if let Some(ref handler) = cb {
                                             handler(book_for_click.clone(), window, cx);
                                         }
+                                    })
+                                    .on_toggle_favorite(move |id, _, cx| {
+                                        view_fav_row.update(cx, |this, cx| {
+                                            this.toggle_favorite(id, cx);
+                                        });
                                     }),
                                 );
                             rows.push(row_element);

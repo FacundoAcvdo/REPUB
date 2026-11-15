@@ -117,8 +117,7 @@ impl EpubParser {
                 .map(|(content, _mime)| content)
                 .unwrap_or_default();
 
-            let chapter_title = find_toc_title(&toc, idx)
-                .unwrap_or_else(|| format!("Capítulo {}", idx + 1));
+            let chapter_title = find_toc_title(&toc, idx).unwrap_or_default();
 
             chapters.push(ParsedChapter {
                 index: idx,

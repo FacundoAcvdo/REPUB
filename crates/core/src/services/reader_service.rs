@@ -162,4 +162,28 @@ mod tests {
         assert_eq!(content.chapter_title, "Prólogo");
         assert_eq!(content.paragraphs, vec!["Texto real del libro."]);
     }
+
+    #[test]
+    fn test_paragraph_splits_across_pages_when_space_remains() {
+        let p1 = "Primer párrafo corto.".to_string();
+        let p2 = "Palabra ".repeat(60);
+        let ch = ParsedChapter {
+            index: 0,
+            id: "c1".into(),
+            title: "1".into(),
+            raw_xhtml: format!("<h1>1</h1><p>{p1}</p><p>{p2}</p>"),
+        };
+
+        let paginated = Paginator::paginate(&[ch], PaginationConfig { chars_per_page: 250 });
+        assert!(paginated.total_pages >= 2);
+
+        let page1 = paginated.resolve_page(1).unwrap();
+        assert_eq!(page1.paragraphs.len(), 2);
+        assert_eq!(page1.paragraphs[0], "Primer párrafo corto.");
+        assert!(page1.paragraphs[1].starts_with("Palabra"));
+
+        let page2 = paginated.resolve_page(2).unwrap();
+        assert!(!page2.paragraphs.is_empty());
+        assert!(page2.paragraphs[0].starts_with("Palabra"));
+    }
 }

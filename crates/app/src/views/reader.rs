@@ -8,6 +8,7 @@ use epub_core::services::ReaderService;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::Icon;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::theme::reader_settings::ReaderSettingsState;
@@ -60,7 +61,15 @@ impl ReaderView {
                                     ReaderService::load_book_pages(&file_path, config)
                                 {
                                     book.chapters = paginated.chapters;
-                                    book.total_pages = paginated.total_pages.max(1);
+                                    let new_total = paginated.total_pages.max(1);
+                                    if new_total != book.total_pages {
+                                        book.total_pages = new_total;
+                                        let _ = BookRepository::update_total_pages(
+                                            db.conn(),
+                                            &book.id,
+                                            new_total,
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -593,21 +602,23 @@ impl Render for ReaderView {
                                                     .font_family("Inter")
                                                     .child(book_title),
                                             )
-                                            .child(
-                                                div()
-                                                    .text_size(px(effective_chapter_title_size))
-                                                    .font_bold()
-                                                    .text_color(text_color)
-                                                    .child(page_content.chapter_title.clone()),
-                                            )
-                                            .child(
-                                                div()
-                                                    .w(px(36.0 * zoom))
-                                                    .h(px(2.0))
-                                                    .rounded_full()
-                                                    .bg(tokens.accent.opacity(0.4))
-                                                    .mt(px(4.0)),
-                                            ),
+                                            .when(!page_content.chapter_title.trim().is_empty(), |this| {
+                                                this.child(
+                                                    div()
+                                                        .text_size(px(effective_chapter_title_size))
+                                                        .font_bold()
+                                                        .text_color(text_color)
+                                                        .child(page_content.chapter_title.clone()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w(px(36.0 * zoom))
+                                                        .h(px(2.0))
+                                                        .rounded_full()
+                                                        .bg(tokens.accent.opacity(0.4))
+                                                        .mt(px(4.0)),
+                                                )
+                                            }),
                                     )
                                     // Párrafos del texto ficticio
                                     .child(

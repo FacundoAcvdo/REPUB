@@ -88,6 +88,7 @@ pub enum BookFilter {
     Reading,
     Completed,
     Unread,
+    Favorites,
 }
 
 impl BookFilter {
@@ -97,6 +98,7 @@ impl BookFilter {
             BookFilter::Reading => "En progreso",
             BookFilter::Completed => "Completados",
             BookFilter::Unread => "Por leer",
+            BookFilter::Favorites => "Favoritos",
         }
     }
 
@@ -106,6 +108,7 @@ impl BookFilter {
             BookFilter::Reading,
             BookFilter::Completed,
             BookFilter::Unread,
+            BookFilter::Favorites,
         ]
     }
 }
@@ -157,6 +160,7 @@ impl Book {
             BookFilter::Reading => self.is_reading(),
             BookFilter::Completed => self.is_completed(),
             BookFilter::Unread => self.is_unread(),
+            BookFilter::Favorites => false,
         }
     }
 

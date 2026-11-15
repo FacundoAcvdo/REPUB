@@ -97,6 +97,8 @@ impl ShellView {
         self.current_dest = dest;
         if self.current_dest == NavDestination::Home {
             self.home_view.update(cx, |home, cx| home.refresh(cx));
+        } else if self.current_dest == NavDestination::Library {
+            self.library_view.update(cx, |lib, cx| lib.reload_from_db(cx));
         }
         cx.notify();
     }
@@ -107,12 +109,15 @@ impl ShellView {
             self.current_dest = prev;
             if self.current_dest == NavDestination::Home {
                 self.home_view.update(cx, |home, cx| home.refresh(cx));
+            } else if self.current_dest == NavDestination::Library {
+                self.library_view.update(cx, |lib, cx| lib.reload_from_db(cx));
             }
             cx.notify();
         } else {
             // Si el historial está vacío (ej. vino directamente al lector), vuelve a Biblioteca
             if self.current_dest == NavDestination::Reader {
                 self.current_dest = NavDestination::Library;
+                self.library_view.update(cx, |lib, cx| lib.reload_from_db(cx));
                 cx.notify();
             }
         }
@@ -124,6 +129,8 @@ impl ShellView {
             self.current_dest = next;
             if self.current_dest == NavDestination::Home {
                 self.home_view.update(cx, |home, cx| home.refresh(cx));
+            } else if self.current_dest == NavDestination::Library {
+                self.library_view.update(cx, |lib, cx| lib.reload_from_db(cx));
             }
             cx.notify();
         }

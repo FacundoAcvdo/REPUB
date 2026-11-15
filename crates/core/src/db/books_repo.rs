@@ -114,6 +114,7 @@ impl BookRepository {
             BookFilter::Reading => "p.status = 'Reading'",
             BookFilter::Completed => "p.status = 'Completed'",
             BookFilter::Unread => "COALESCE(p.status, 'Unread') = 'Unread'",
+            BookFilter::Favorites => "COALESCE(p.is_favorite, 0) = 1",
         };
 
         let order_clause = match sort {
@@ -150,6 +151,19 @@ impl BookRepository {
             result.push(row?);
         }
         Ok(result)
+    }
+
+    /// Actualiza el total de páginas almacenado para un libro si cambió al repaginar.
+    pub fn update_total_pages(
+        conn: &Connection,
+        book_id: &str,
+        total_pages: u32,
+    ) -> CoreResult<()> {
+        conn.execute(
+            "UPDATE books SET total_pages = ?1 WHERE id = ?2 AND total_pages != ?1",
+            params![total_pages, book_id],
+        )?;
+        Ok(())
     }
 
     /// Elimina un libro por su ID (las tablas relacionadas se eliminan por cascada).

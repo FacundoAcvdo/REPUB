@@ -49,7 +49,10 @@ pub struct BookCard {
     book: Book,
     tokens: ThemeTokens,
     radius: Pixels,
+    cover_path: Option<String>,
+    is_favorite: bool,
     on_click: Option<Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>>,
+    on_toggle_favorite: Option<Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>>,
 }
 
 impl BookCard {
@@ -64,8 +67,21 @@ impl BookCard {
             book,
             tokens,
             radius,
+            cover_path: None,
+            is_favorite: false,
             on_click: None,
+            on_toggle_favorite: None,
         }
+    }
+
+    pub fn cover_path(mut self, path: Option<String>) -> Self {
+        self.cover_path = path;
+        self
+    }
+
+    pub fn is_favorite(mut self, is_favorite: bool) -> Self {
+        self.is_favorite = is_favorite;
+        self
     }
 
     pub fn on_click(
@@ -73,6 +89,14 @@ impl BookCard {
         handler: impl Fn(&str, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_click = Some(Rc::new(handler));
+        self
+    }
+
+    pub fn on_toggle_favorite(
+        mut self,
+        handler: impl Fn(&str, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_toggle_favorite = Some(Rc::new(handler));
         self
     }
 }
@@ -84,6 +108,13 @@ impl RenderOnce for BookCard {
         let radius = self.radius;
         let book_id = book.id.clone();
         let on_click = self.on_click;
+        let on_toggle_favorite = self.on_toggle_favorite;
+        let is_favorite = self.is_favorite;
+        let real_cover = self
+            .cover_path
+            .filter(|p| !p.is_empty() && std::path::Path::new(p).exists())
+            .map(std::path::PathBuf::from);
+        let has_real_cover = real_cover.is_some();
 
         let primary_color = hex_to_hsla(book.cover_palette.primary, 1.0);
         let secondary_color = hex_to_hsla(book.cover_palette.secondary, 0.85);
@@ -121,6 +152,15 @@ impl RenderOnce for BookCard {
                     .group_hover("book-card", |s| {
                         s.border_color(tokens.accent)
                     })
+                    .when_some(real_cover, |this, path| {
+                        this.child(
+                            img(path)
+                                .absolute()
+                                .inset_0()
+                                .size_full()
+                                .object_fit(ObjectFit::Cover),
+                        )
+                    })
                     // Book Spine Crease Effect (left 8px)
                     .child(
                         div()
@@ -144,17 +184,47 @@ impl RenderOnce for BookCard {
                                     .bg(hsla(0.0, 0.0, 1.0, 0.12)),
                             ),
                     )
-                    // Top: Genre badge
+                    // Top: Favorite star & Genre badge
                     .child(
                         div()
                             .flex()
-                            .justify_end()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .pl(px(4.0))
+                            .child(
+                                div()
+                                    .id(ElementId::from(format!("fav-card-{}", book_id)))
+                                    .w(px(22.0))
+                                    .h(px(22.0))
+                                    .rounded_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .bg(hsla(0.0, 0.0, 0.0, 0.35))
+                                    .border_1()
+                                    .border_color(hsla(0.0, 0.0, 1.0, 0.15))
+                                    .text_size(px(11.0))
+                                    .text_color(if is_favorite {
+                                        tokens.accent
+                                    } else {
+                                        hsla(0.0, 0.0, 1.0, 0.75)
+                                    })
+                                    .when_some(on_toggle_favorite, |this, handler| {
+                                        let id = book_id.clone();
+                                        this.on_click(move |_, window, cx| {
+                                            cx.stop_propagation();
+                                            handler(&id, window, cx);
+                                        })
+                                    })
+                                    .child(if is_favorite { "★" } else { "☆" }),
+                            )
                             .child(
                                 div()
                                     .px(px(6.0))
                                     .py(px(2.0))
                                     .rounded_full()
-                                    .bg(hsla(0.0, 0.0, 0.0, 0.3))
+                                    .bg(hsla(0.0, 0.0, 0.0, 0.45))
                                     .border_1()
                                     .border_color(hsla(0.0, 0.0, 1.0, 0.15))
                                     .text_size(px(9.0))
@@ -163,46 +233,50 @@ impl RenderOnce for BookCard {
                                     .child(book.genre.name_es().to_uppercase()),
                             ),
                     )
-                    // Center: Procedural Title & decorative lines
+                    // Center: Procedural Title & decorative lines (only when no real cover image)
+                    .when(!has_real_cover, |this| {
+                        this.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(6.0))
+                                .px(px(6.0))
+                                // Subtle geometric accent icon or line
+                                .child(
+                                    div()
+                                        .w(px(28.0))
+                                        .h(px(2.0))
+                                        .rounded_full()
+                                        .bg(accent_color),
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_bold()
+                                        .text_color(text_color)
+                                        .text_center()
+                                        .line_height(relative(1.2))
+                                        .child(book.title.clone()),
+                                ),
+                        )
+                    })
+                    // Bottom: Author on cover (if procedural) & discrete 2px progress bar
                     .child(
                         div()
                             .flex()
                             .flex_col()
-                            .items_center()
-                            .justify_center()
                             .gap(px(6.0))
-                            .px(px(6.0))
-                            // Subtle geometric accent icon or line
-                            .child(
-                                div()
-                                    .w(px(28.0))
-                                    .h(px(2.0))
-                                    .rounded_full()
-                                    .bg(accent_color),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_bold()
-                                    .text_color(text_color)
-                                    .text_center()
-                                    .line_height(relative(1.2))
-                                    .child(book.title.clone()),
-                            ),
-                    )
-                    // Bottom: Author on cover & discrete 2px progress bar
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(6.0))
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_center()
-                                    .text_color(secondary_color)
-                                    .child(book.author.clone()),
-                            )
+                            .when(!has_real_cover, |this| {
+                                this.child(
+                                    div()
+                                        .text_size(px(11.0))
+                                        .text_center()
+                                        .text_color(secondary_color)
+                                        .child(book.author.clone()),
+                                )
+                            })
                             // 2px Progress bar at bottom of cover
                             .child(
                                 div()
@@ -288,7 +362,10 @@ pub struct BookRow {
     book: Book,
     tokens: ThemeTokens,
     radius: Pixels,
+    cover_path: Option<String>,
+    is_favorite: bool,
     on_click: Option<Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>>,
+    on_toggle_favorite: Option<Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>>,
 }
 
 impl BookRow {
@@ -303,8 +380,21 @@ impl BookRow {
             book,
             tokens,
             radius,
+            cover_path: None,
+            is_favorite: false,
             on_click: None,
+            on_toggle_favorite: None,
         }
+    }
+
+    pub fn cover_path(mut self, path: Option<String>) -> Self {
+        self.cover_path = path;
+        self
+    }
+
+    pub fn is_favorite(mut self, is_favorite: bool) -> Self {
+        self.is_favorite = is_favorite;
+        self
     }
 
     pub fn on_click(
@@ -312,6 +402,14 @@ impl BookRow {
         handler: impl Fn(&str, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_click = Some(Rc::new(handler));
+        self
+    }
+
+    pub fn on_toggle_favorite(
+        mut self,
+        handler: impl Fn(&str, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_toggle_favorite = Some(Rc::new(handler));
         self
     }
 }
@@ -323,6 +421,12 @@ impl RenderOnce for BookRow {
         let radius = self.radius;
         let book_id = book.id.clone();
         let on_click = self.on_click;
+        let on_toggle_favorite = self.on_toggle_favorite;
+        let is_favorite = self.is_favorite;
+        let real_cover = self
+            .cover_path
+            .filter(|p| !p.is_empty() && std::path::Path::new(p).exists())
+            .map(std::path::PathBuf::from);
 
         let primary_color = hex_to_hsla(book.cover_palette.primary, 1.0);
         let accent_color = hex_to_hsla(book.cover_palette.accent, 1.0);
@@ -360,19 +464,30 @@ impl RenderOnce for BookRow {
                             .w(px(40.0))
                             .h(px(60.0))
                             .rounded(px(4.0))
+                            .overflow_hidden()
                             .bg(primary_color)
                             .border_1()
                             .border_color(tokens.border)
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(
-                                div()
-                                    .w(px(16.0))
-                                    .h(px(2.0))
-                                    .rounded_full()
-                                    .bg(accent_color),
-                            ),
+                            .map(|this| {
+                                if let Some(path) = real_cover {
+                                    this.child(
+                                        img(path)
+                                            .size_full()
+                                            .object_fit(ObjectFit::Cover),
+                                    )
+                                } else {
+                                    this.child(
+                                        div()
+                                            .w(px(16.0))
+                                            .h(px(2.0))
+                                            .rounded_full()
+                                            .bg(accent_color),
+                                    )
+                                }
+                            }),
                     )
                     // Details
                     .child(
@@ -395,13 +510,38 @@ impl RenderOnce for BookRow {
                             ),
                     ),
             )
-            // Right: Genre Badge + Progress bar + Status
+            // Right: Favorite + Genre Badge + Progress bar + Status
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(24.0))
+                    .gap(px(16.0))
+                    .child(
+                        div()
+                            .id(ElementId::from(format!("fav-row-{}", book_id)))
+                            .w(px(26.0))
+                            .h(px(26.0))
+                            .rounded_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .hover(|s| s.bg(tokens.bg_sunken))
+                            .text_size(px(13.0))
+                            .text_color(if is_favorite {
+                                tokens.accent
+                            } else {
+                                tokens.text_muted
+                            })
+                            .when_some(on_toggle_favorite, |this, handler| {
+                                let id = book_id.clone();
+                                this.on_click(move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    handler(&id, window, cx);
+                                })
+                            })
+                            .child(if is_favorite { "★" } else { "☆" }),
+                    )
                     // Genre badge
                     .child(
                         div()

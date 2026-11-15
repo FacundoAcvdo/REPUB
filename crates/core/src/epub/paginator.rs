@@ -10,7 +10,7 @@ pub struct PaginationConfig {
 impl Default for PaginationConfig {
     fn default() -> Self {
         Self {
-            chars_per_page: 1600,
+            chars_per_page: 2400,
         }
     }
 }
@@ -22,14 +22,14 @@ impl PaginationConfig {
         let base_lh = line_height.clamp(1.0, 2.5);
         let base_width = max_line_width.clamp(360, 1200) as f32;
 
-        // Referencia estándar: 18px, 1.6 interlineado, 680px ancho ≈ 1600 caracteres
+        // Referencia estándar: 18px, 1.6 interlineado, 680px ancho ≈ 2400 caracteres
         let font_factor = 18.0 / base_font;
         let lh_factor = 1.6 / base_lh;
         let width_factor = base_width / 680.0;
 
-        let estimated = (1600.0 * font_factor * lh_factor * width_factor).round() as usize;
+        let estimated = (2400.0 * font_factor * lh_factor * width_factor).round() as usize;
         Self {
-            chars_per_page: estimated.clamp(450, 3800),
+            chars_per_page: estimated.clamp(600, 5200),
         }
     }
 }
@@ -128,7 +128,13 @@ impl Paginator {
         let mut chapters = Vec::new();
 
         for ch in parsed_chapters {
-            let raw_paragraphs = extract_paragraphs(&ch.raw_xhtml);
+            let mut raw_paragraphs = extract_paragraphs(&ch.raw_xhtml);
+            let title_trimmed = ch.title.trim();
+            if !title_trimmed.is_empty() && raw_paragraphs.len() > 1 {
+                if raw_paragraphs[0].trim().eq_ignore_ascii_case(title_trimmed) {
+                    raw_paragraphs.remove(0);
+                }
+            }
             let pages = paginate_paragraphs(&raw_paragraphs, max_chars);
             if pages.is_empty() {
                 continue;
@@ -153,31 +159,51 @@ impl Paginator {
 }
 
 fn paginate_paragraphs(paragraphs: &[String], max_chars: usize) -> Vec<String> {
+    const MIN_SPLIT_REMAINING: usize = 80;
     let mut pages = Vec::new();
     let mut current_page = String::new();
 
     for paragraph in paragraphs {
-        if paragraph.chars().count() > max_chars {
-            if !current_page.is_empty() {
-                pages.push(std::mem::take(&mut current_page));
-            }
-            for chunk in split_long_paragraph(paragraph, max_chars) {
-                pages.push(chunk);
-            }
+        let mut remaining_text = paragraph.trim().to_string();
+        if remaining_text.is_empty() {
             continue;
         }
 
-        let extra_sep = if current_page.is_empty() { 0 } else { 2 };
-        let projected_len = current_page.chars().count() + extra_sep + paragraph.chars().count();
-
-        if projected_len > max_chars && !current_page.is_empty() {
-            pages.push(std::mem::take(&mut current_page));
-        }
-
         if !current_page.is_empty() {
-            current_page.push_str("\n\n");
+            let used = current_page.chars().count();
+            let para_len = remaining_text.chars().count();
+
+            if used + 2 + para_len <= max_chars {
+                current_page.push_str("\n\n");
+                current_page.push_str(&remaining_text);
+                continue;
+            }
+
+            let available = max_chars.saturating_sub(used + 2);
+            if available >= MIN_SPLIT_REMAINING {
+                let (head, tail) = split_at_word_limit(&remaining_text, available);
+                if !head.is_empty() {
+                    current_page.push_str("\n\n");
+                    current_page.push_str(&head);
+                    pages.push(std::mem::take(&mut current_page));
+                    remaining_text = tail;
+                } else {
+                    pages.push(std::mem::take(&mut current_page));
+                }
+            } else {
+                pages.push(std::mem::take(&mut current_page));
+            }
         }
-        current_page.push_str(paragraph);
+
+        while !remaining_text.is_empty() {
+            if remaining_text.chars().count() <= max_chars {
+                current_page = remaining_text;
+                break;
+            }
+            let (head, tail) = split_at_word_limit(&remaining_text, max_chars);
+            pages.push(head);
+            remaining_text = tail;
+        }
     }
 
     if !current_page.is_empty() {
@@ -187,24 +213,41 @@ fn paginate_paragraphs(paragraphs: &[String], max_chars: usize) -> Vec<String> {
     pages
 }
 
-fn split_long_paragraph(paragraph: &str, max_chars: usize) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut current = String::new();
+fn split_at_word_limit(text: &str, max_chars: usize) -> (String, String) {
+    let mut head = String::new();
+    let mut tail = String::new();
+    let mut overflowed = false;
 
-    for word in paragraph.split_whitespace() {
-        let sep = if current.is_empty() { 0 } else { 1 };
-        if current.chars().count() + sep + word.chars().count() > max_chars && !current.is_empty() {
-            chunks.push(std::mem::take(&mut current));
+    for word in text.split_whitespace() {
+        if overflowed {
+            if !tail.is_empty() {
+                tail.push(' ');
+            }
+            tail.push_str(word);
+            continue;
         }
-        if !current.is_empty() {
-            current.push(' ');
+
+        let sep = if head.is_empty() { 0 } else { 1 };
+        let word_len = word.chars().count();
+        let head_len = head.chars().count();
+
+        if head_len + sep + word_len <= max_chars {
+            if !head.is_empty() {
+                head.push(' ');
+            }
+            head.push_str(word);
+        } else if head.is_empty() {
+            // Palabra única más larga que `max_chars`: cortar por caracteres para evitar bucle.
+            let taken: String = word.chars().take(max_chars).collect();
+            let rest: String = word.chars().skip(max_chars).collect();
+            head = taken;
+            tail = rest;
+            overflowed = true;
+        } else {
+            overflowed = true;
+            tail.push_str(word);
         }
-        current.push_str(word);
     }
 
-    if !current.is_empty() {
-        chunks.push(current);
-    }
-
-    chunks
+    (head, tail)
 }
