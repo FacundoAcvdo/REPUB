@@ -1,5 +1,6 @@
 pub mod bookmarks_repo;
 pub mod books_repo;
+pub mod highlights_repo;
 pub mod migrations;
 pub mod progress_repo;
 pub mod settings_repo;
@@ -12,6 +13,7 @@ use crate::error::CoreResult;
 
 pub use bookmarks_repo::{BookmarkRecord, BookmarkRepository};
 pub use books_repo::{BookRepository, StoredBook};
+pub use highlights_repo::{HighlightRecord, HighlightRepository};
 pub use progress_repo::{ProgressRepository, ReadingProgressRecord, ReadingSessionRecord};
 pub use settings_repo::SettingsRepository;
 
@@ -333,5 +335,54 @@ mod tests {
         // Toggle removes existing bookmark on page 12
         assert!(!BookmarkRepository::toggle(db.conn(), "bm-1", 12, 1, "Capítulo 2").unwrap());
         assert_eq!(BookmarkRepository::list_for_book(db.conn(), "bm-1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_highlights_crud_and_page_filter() {
+        let mut db = Database::open_in_memory().unwrap();
+        let b = sample_book("hl-1", "Ensayo sobre la ceguera", "José Saramago", 310, 0);
+        BookRepository::upsert(db.conn_mut(), &b, None, None, "es").unwrap();
+
+        let h1 = HighlightRepository::create(
+            db.conn(),
+            "hl-1",
+            12,
+            1,
+            5,
+            28,
+            "la ceguera blanca",
+            "Tema central",
+            "amber",
+        )
+        .unwrap();
+        let h2 = HighlightRepository::create(
+            db.conn(),
+            "hl-1",
+            45,
+            0,
+            0,
+            15,
+            "dentro del pabellón",
+            "",
+            "emerald",
+        )
+        .unwrap();
+
+        let all = HighlightRepository::list_for_book(db.conn(), "hl-1").unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].selected_text, "la ceguera blanca");
+        assert_eq!(all[1].color, "emerald");
+
+        let p12 = HighlightRepository::list_for_page(db.conn(), "hl-1", 12).unwrap();
+        assert_eq!(p12.len(), 1);
+        assert_eq!(p12[0].id, h1.id);
+
+        HighlightRepository::update_note_and_color(db.conn(), h2.id, "Nota editada", "sky").unwrap();
+        let p45 = HighlightRepository::list_for_page(db.conn(), "hl-1", 45).unwrap();
+        assert_eq!(p45[0].note, "Nota editada");
+        assert_eq!(p45[0].color, "sky");
+
+        HighlightRepository::delete(db.conn(), h1.id).unwrap();
+        assert_eq!(HighlightRepository::list_for_book(db.conn(), "hl-1").unwrap().len(), 1);
     }
 }

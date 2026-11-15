@@ -18,13 +18,11 @@ pub struct LibraryToolbar {
     current_filter: BookFilter,
     current_sort: BookSort,
     is_grid_view: bool,
-    is_1000_mode: bool,
     total_books: usize,
     filtered_books: usize,
     on_filter: Option<Rc<dyn Fn(BookFilter, &mut Window, &mut App) + 'static>>,
     on_sort: Option<Rc<dyn Fn(&mut Window, &mut App) + 'static>>,
     on_toggle_view: Option<Rc<dyn Fn(bool, &mut Window, &mut App) + 'static>>,
-    on_toggle_1000: Option<Rc<dyn Fn(&mut Window, &mut App) + 'static>>,
     on_import: Option<Rc<dyn Fn(&mut Window, &mut App) + 'static>>,
 }
 
@@ -37,7 +35,6 @@ impl LibraryToolbar {
         current_filter: BookFilter,
         current_sort: BookSort,
         is_grid_view: bool,
-        is_1000_mode: bool,
         total_books: usize,
         filtered_books: usize,
     ) -> Self {
@@ -49,13 +46,11 @@ impl LibraryToolbar {
             current_filter,
             current_sort,
             is_grid_view,
-            is_1000_mode,
             total_books,
             filtered_books,
             on_filter: None,
             on_sort: None,
             on_toggle_view: None,
-            on_toggle_1000: None,
             on_import: None,
         }
     }
@@ -84,14 +79,6 @@ impl LibraryToolbar {
         self
     }
 
-    pub fn on_toggle_1000(
-        mut self,
-        handler: impl Fn(&mut Window, &mut App) + 'static,
-    ) -> Self {
-        self.on_toggle_1000 = Some(Rc::new(handler));
-        self
-    }
-
     pub fn on_import(
         mut self,
         handler: impl Fn(&mut Window, &mut App) + 'static,
@@ -109,10 +96,8 @@ impl RenderOnce for LibraryToolbar {
         let on_filter = self.on_filter;
         let on_sort = self.on_sort;
         let on_toggle_view = self.on_toggle_view;
-        let on_toggle_1000 = self.on_toggle_1000;
         let on_import = self.on_import;
         let is_grid = self.is_grid_view;
-        let is_1000 = self.is_1000_mode;
 
         div()
             .id(self.id)
@@ -166,49 +151,6 @@ impl RenderOnce for LibraryToolbar {
                                 div()
                                     .w(px(240.0))
                                     .child(Input::new(&self.search_input)),
-                            )
-                            // Toggle 1,000 mock catalog button
-                            .child(
-                                div()
-                                    .id("btn-toggle-1000")
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap(px(6.0))
-                                    .px(px(12.0))
-                                    .py(px(6.0))
-                                    .rounded(radius)
-                                    .border_1()
-                                    .border_color(if is_1000 {
-                                        tokens.accent
-                                    } else {
-                                        tokens.border
-                                    })
-                                    .bg(if is_1000 {
-                                        tokens.bg_hover
-                                    } else {
-                                        tokens.bg_elevated
-                                    })
-                                    .hover(|s| s.bg(tokens.bg_hover))
-                                    .cursor_pointer()
-                                    .when_some(on_toggle_1000, |this, handler| {
-                                        this.on_click(move |_, window, cx| handler(window, cx))
-                                    })
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_medium()
-                                            .text_color(if is_1000 {
-                                                tokens.accent
-                                            } else {
-                                                tokens.text
-                                            })
-                                            .child(if is_1000 {
-                                                "1.000 libros (Activo)"
-                                            } else {
-                                                "Probar 1.000 libros"
-                                            }),
-                                    ),
                             )
                             // + Importar EPUB Button
                             .child(

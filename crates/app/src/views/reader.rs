@@ -1,6 +1,9 @@
 use std::rc::Rc;
 use std::time::Instant;
-use epub_core::db::{BookRepository, BookmarkRecord, BookmarkRepository, Database, SettingsRepository};
+use epub_core::db::{
+    BookRepository, BookmarkRecord, BookmarkRepository, Database, HighlightRecord,
+    HighlightRepository, SettingsRepository,
+};
 use epub_core::domain::book::Book;
 use epub_core::epub::{PaginatedBook, PaginationConfig};
 use epub_core::mock::books::mock_books;
@@ -19,6 +22,7 @@ use crate::theme::state::ThemeState;
 pub enum ReaderPanelTab {
     Toc,
     Bookmarks,
+    Highlights,
 }
 
 pub struct ReaderView {
@@ -30,6 +34,12 @@ pub struct ReaderView {
     panel_tab: ReaderPanelTab,
     bookmarks: Vec<BookmarkRecord>,
     note_input: Entity<InputState>,
+    highlights: Vec<HighlightRecord>,
+    highlight_note_input: Entity<InputState>,
+    highlight_edit_note_input: Entity<InputState>,
+    editing_highlight_id: Option<i64>,
+    selected_highlight_color: String,
+    is_quote_popover_open: bool,
     ai_enabled_for_book: bool,
     is_ai_drawer_open: bool,
     ai_drawer_width: f32,
@@ -62,6 +72,12 @@ impl ReaderView {
         let note_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Nota opcional para esta página...")
         });
+        let highlight_note_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Nota opcional para esta cita...")
+        });
+        let highlight_edit_note_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Editar nota de la cita...")
+        });
         let ai_question_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Pregunta sobre lo leído hasta aquí...")
         });
@@ -75,6 +91,12 @@ impl ReaderView {
             panel_tab: ReaderPanelTab::Toc,
             bookmarks: Vec::new(),
             note_input,
+            highlights: Vec::new(),
+            highlight_note_input,
+            highlight_edit_note_input,
+            editing_highlight_id: None,
+            selected_highlight_color: "amber".to_string(),
+            is_quote_popover_open: false,
             ai_enabled_for_book: true,
             is_ai_drawer_open: false,
             ai_drawer_width: 380.0,
@@ -154,9 +176,129 @@ impl ReaderView {
         self.selection_range = None;
         self.tooltip_pos = None;
         self.drag_anchor = None;
+        self.is_quote_popover_open = false;
+        self.editing_highlight_id = None;
         self.last_activity_at = Instant::now();
         self.book = Some(book);
         self.reload_bookmarks();
+        self.reload_highlights();
+        cx.notify();
+    }
+
+    fn reload_highlights(&mut self) {
+        self.highlights.clear();
+        let Some(ref book) = self.book else {
+            return;
+        };
+        if let Some(db_path) = Database::default_db_path() {
+            if db_path.exists() {
+                if let Ok(db) = Database::open(&db_path) {
+                    if let Ok(list) = HighlightRepository::list_for_book(db.conn(), &book.id) {
+                        self.highlights = list;
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn save_selection_as_highlight(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((p_idx, s, e)) = self.selection_range else {
+            return;
+        };
+        let Some(para) = self.current_paragraphs.get(p_idx) else {
+            return;
+        };
+        if s >= e
+            || e > para.len()
+            || !para.is_char_boundary(s)
+            || !para.is_char_boundary(e)
+        {
+            return;
+        }
+        let selected_text = para[s..e].trim().to_string();
+        if selected_text.is_empty() {
+            return;
+        }
+        let Some(ref book) = self.book else {
+            return;
+        };
+        let note = self.highlight_note_input.read(cx).value().to_string();
+        let color = self.selected_highlight_color.clone();
+        let page = self.current_page;
+
+        if let Some(db_path) = Database::default_db_path() {
+            if let Ok(db) = Database::open(&db_path) {
+                let _ = HighlightRepository::create(
+                    db.conn(),
+                    &book.id,
+                    page,
+                    p_idx,
+                    s,
+                    e,
+                    &selected_text,
+                    &note,
+                    &color,
+                );
+            }
+        }
+
+        self.highlight_note_input.update(cx, |state, cx| {
+            state.set_value("", window, cx);
+        });
+        self.is_quote_popover_open = false;
+        self.selection_range = None;
+        self.tooltip_pos = None;
+        self.drag_anchor = None;
+        self.is_dragging_text = false;
+        self.reload_highlights();
+        cx.notify();
+    }
+
+    pub fn delete_highlight(&mut self, id: i64, cx: &mut Context<Self>) {
+        if let Some(db_path) = Database::default_db_path() {
+            if let Ok(db) = Database::open(&db_path) {
+                let _ = HighlightRepository::delete(db.conn(), id);
+            }
+        }
+        if self.editing_highlight_id == Some(id) {
+            self.editing_highlight_id = None;
+        }
+        self.reload_highlights();
+        cx.notify();
+    }
+
+    pub fn start_editing_highlight(
+        &mut self,
+        hl: &HighlightRecord,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editing_highlight_id = Some(hl.id);
+        let existing_note = hl.note.clone();
+        self.highlight_edit_note_input.update(cx, |state, cx| {
+            state.set_value(existing_note, window, cx);
+        });
+        cx.notify();
+    }
+
+    pub fn save_edited_highlight(
+        &mut self,
+        id: i64,
+        color: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let note = self.highlight_edit_note_input.read(cx).value().to_string();
+        if let Some(db_path) = Database::default_db_path() {
+            if let Ok(db) = Database::open(&db_path) {
+                let _ = HighlightRepository::update_note_and_color(db.conn(), id, &note, color);
+            }
+        }
+        self.highlight_edit_note_input.update(cx, |state, cx| {
+            state.set_value("", window, cx);
+        });
+        self.editing_highlight_id = None;
+        self.reload_highlights();
         cx.notify();
     }
 
@@ -1133,12 +1275,15 @@ impl Render for ReaderView {
                     .when(self.is_panel_open, |this| {
                         let view_tab_toc = cx.entity().clone();
                         let view_tab_bm = cx.entity().clone();
+                        let view_tab_hl = cx.entity().clone();
                         let view_save_note = cx.entity().clone();
                         let view_jump = cx.entity().clone();
                         let view_del_bm = cx.entity().clone();
                         let panel_tab = self.panel_tab;
                         let current_page = self.current_page;
                         let bookmarks = self.bookmarks.clone();
+                        let highlights = self.highlights.clone();
+                        let editing_hl_id = self.editing_highlight_id;
 
                         let mut toc_entries: Vec<(u32, String, bool)> = Vec::new();
                         if let Some(ref b) = self.book {
@@ -1233,6 +1378,36 @@ impl Render for ReaderView {
                                                     });
                                                 })
                                                 .child(format!("Marcadores ({})", bookmarks.len())),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("tab-panel-highlights")
+                                                .flex_1()
+                                                .py(px(6.0))
+                                                .rounded(px(4.0))
+                                                .text_xs()
+                                                .font_semibold()
+                                                .text_center()
+                                                .cursor_pointer()
+                                                .bg(if panel_tab == ReaderPanelTab::Highlights {
+                                                    tokens.bg_sunken
+                                                } else {
+                                                    gpui_kit::transparent_black()
+                                                })
+                                                .text_color(if panel_tab == ReaderPanelTab::Highlights {
+                                                    tokens.accent
+                                                } else {
+                                                    tokens.text_muted
+                                                })
+                                                .on_click(move |_, _, cx| {
+                                                    view_tab_hl.update(cx, |this, cx| {
+                                                        this.set_panel_tab(
+                                                            ReaderPanelTab::Highlights,
+                                                            cx,
+                                                        );
+                                                    });
+                                                })
+                                                .child(format!("Citas ({})", highlights.len())),
                                         ),
                                 )
                                 // Contenido del panel
@@ -1246,6 +1421,156 @@ impl Render for ReaderView {
                                         .flex_col()
                                         .gap(px(6.0))
                                         .map(|panel| {
+                                            if panel_tab == ReaderPanelTab::Highlights {
+                                                if highlights.is_empty() {
+                                                    return panel.child(
+                                                        div()
+                                                            .p(px(12.0))
+                                                            .text_xs()
+                                                            .text_color(tokens.text_muted)
+                                                            .child("Seleccioná texto en una página y elegí \"Guardar cita\" para guardar pasajes y notas aquí."),
+                                                    );
+                                                }
+                                                return panel.children(highlights.into_iter().map(|hl| {
+                                                    let hl_id = hl.id;
+                                                    let hl_page = hl.page_number;
+                                                    let hl_color = hl.color.clone();
+                                                    let hl_for_edit = hl.clone();
+                                                    let solid = highlight_solid_color(&hl_color, tokens.accent);
+                                                    let is_editing = editing_hl_id == Some(hl_id);
+                                                    let view_j = view_jump.clone();
+
+                                                    div()
+                                                        .id(ElementId::from(format!("hl-item-{hl_id}")))
+                                                        .flex()
+                                                        .flex_col()
+                                                        .gap(px(5.0))
+                                                        .p(px(9.0))
+                                                        .rounded(px(6.0))
+                                                        .border_1()
+                                                        .border_color(tokens.border)
+                                                        .border_l_3()
+                                                        .border_color(solid)
+                                                        .bg(tokens.bg)
+                                                        .child(
+                                                            div()
+                                                                .flex()
+                                                                .flex_row()
+                                                                .items_center()
+                                                                .justify_between()
+                                                                .child(
+                                                                    div()
+                                                                        .id(ElementId::from(format!("hl-jump-{hl_id}")))
+                                                                        .text_xs()
+                                                                        .font_semibold()
+                                                                        .text_color(solid)
+                                                                        .cursor_pointer()
+                                                                        .on_click(move |_, _, cx| {
+                                                                            view_j.update(cx, |this, cx| {
+                                                                                this.jump_to_page(hl_page, cx);
+                                                                            });
+                                                                        })
+                                                                        .child(format!("Pág. {hl_page}")),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .flex()
+                                                                        .flex_row()
+                                                                        .gap(px(6.0))
+                                                                        .child(
+                                                                            div()
+                                                                                .id(ElementId::from(format!("hl-edit-{hl_id}")))
+                                                                                .text_size(px(10.5))
+                                                                                .text_color(tokens.text_muted)
+                                                                                .cursor_pointer()
+                                                                                .hover(|s| s.text_color(tokens.accent))
+                                                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                                                    this.start_editing_highlight(&hl_for_edit, window, cx);
+                                                                                }))
+                                                                                .child("Editar"),
+                                                                        )
+                                                                        .child(
+                                                                            div()
+                                                                                .id(ElementId::from(format!("hl-del-{hl_id}")))
+                                                                                .text_xs()
+                                                                                .text_color(tokens.text_muted)
+                                                                                .cursor_pointer()
+                                                                                .hover(|s| s.text_color(tokens.danger))
+                                                                                .on_click(cx.listener(move |this, _, _window, cx| {
+                                                                                    this.delete_highlight(hl_id, cx);
+                                                                                }))
+                                                                                .child("×"),
+                                                                        ),
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_xs()
+                                                                .italic()
+                                                                .text_color(tokens.text)
+                                                                .child(format!("\"{}\"", hl.selected_text)),
+                                                        )
+                                                        .when(!is_editing && !hl.note.trim().is_empty(), |card| {
+                                                            card.child(
+                                                                div()
+                                                                    .p(px(6.0))
+                                                                    .rounded(px(4.0))
+                                                                    .bg(tokens.bg_sunken)
+                                                                    .text_xs()
+                                                                    .text_color(tokens.text_muted)
+                                                                    .child(hl.note),
+                                                            )
+                                                        })
+                                                        .when(is_editing, |card| {
+                                                            let c_save = hl_color.clone();
+                                                            card.child(
+                                                                div()
+                                                                    .flex()
+                                                                    .flex_col()
+                                                                    .gap(px(6.0))
+                                                                    .pt(px(4.0))
+                                                                    .child(Input::new(&self.highlight_edit_note_input))
+                                                                    .child(
+                                                                        div()
+                                                                            .flex()
+                                                                            .flex_row()
+                                                                            .gap(px(6.0))
+                                                                            .child(
+                                                                                div()
+                                                                                    .id(ElementId::from(format!("hl-save-edit-{hl_id}")))
+                                                                                    .px(px(8.0))
+                                                                                    .py(px(4.0))
+                                                                                    .rounded(px(4.0))
+                                                                                    .bg(tokens.accent)
+                                                                                    .text_size(px(11.0))
+                                                                                    .text_color(tokens.accent_text)
+                                                                                    .cursor_pointer()
+                                                                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                                                                        this.save_edited_highlight(hl_id, &c_save, window, cx);
+                                                                                    }))
+                                                                                    .child("Guardar"),
+                                                                            )
+                                                                            .child(
+                                                                                div()
+                                                                                    .id(ElementId::from(format!("hl-cancel-edit-{hl_id}")))
+                                                                                    .px(px(8.0))
+                                                                                    .py(px(4.0))
+                                                                                    .rounded(px(4.0))
+                                                                                    .bg(tokens.bg_sunken)
+                                                                                    .text_size(px(11.0))
+                                                                                    .text_color(tokens.text_muted)
+                                                                                    .cursor_pointer()
+                                                                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                                                                        this.editing_highlight_id = None;
+                                                                                        cx.notify();
+                                                                                    }))
+                                                                                    .child("Cancelar"),
+                                                                            ),
+                                                                    ),
+                                                            )
+                                                        })
+                                                }));
+                                            }
                                             if panel_tab == ReaderPanelTab::Toc {
                                                 panel.children(toc_entries.into_iter().enumerate().map(
                                                     |(idx, (start_page, label, is_active))| {
@@ -1502,20 +1827,58 @@ impl Render for ReaderView {
                                             .line_height(relative(line_height))
                                             .text_color(text_color)
                                             .children(page_content.paragraphs.into_iter().enumerate().map(|(p_idx, p)| {
-                                                let styled = match self.selection_range {
-                                                    Some((sel_p, s, e)) if sel_p == p_idx && s < e && e <= p.len() => {
-                                                        StyledText::new(p).with_default_highlights(
-                                                            &TextStyle::default(),
-                                                            [(
-                                                                s..e,
-                                                                HighlightStyle {
-                                                                    background_color: Some(tokens.accent.opacity(0.28)),
-                                                                    ..Default::default()
-                                                                },
-                                                            )],
+                                                let p_len = p.len();
+                                                let mut runs: Vec<(std::ops::Range<usize>, HighlightStyle)> = self
+                                                    .highlights
+                                                    .iter()
+                                                    .filter(|h| {
+                                                        h.page_number == current_page
+                                                            && h.paragraph_index == p_idx
+                                                            && h.char_start < h.char_end
+                                                            && h.char_end <= p_len
+                                                    })
+                                                    .map(|h| {
+                                                        (
+                                                            h.char_start..h.char_end,
+                                                            HighlightStyle {
+                                                                background_color: Some(highlight_bg_color(
+                                                                    &h.color,
+                                                                    tokens.accent,
+                                                                )),
+                                                                ..Default::default()
+                                                            },
                                                         )
+                                                    })
+                                                    .collect();
+
+                                                if let Some((sel_p, s, e)) = self.selection_range {
+                                                    if sel_p == p_idx && s < e && e <= p_len {
+                                                        runs.push((
+                                                            s..e,
+                                                            HighlightStyle {
+                                                                background_color: Some(
+                                                                    tokens.accent.opacity(0.28),
+                                                                ),
+                                                                ..Default::default()
+                                                            },
+                                                        ));
                                                     }
-                                                    _ => StyledText::new(p),
+                                                }
+
+                                                runs = normalize_non_overlapping_runs(&p, runs);
+
+                                                let styled = if runs.is_empty() {
+                                                    StyledText::new(p)
+                                                } else {
+                                                    let base_para_style = TextStyle {
+                                                        color: text_color,
+                                                        font_size: px(effective_font_size).into(),
+                                                        line_height: relative(line_height).into(),
+                                                        font_family: font_family.into(),
+                                                        ..Default::default()
+                                                    };
+                                                    StyledText::new(p)
+                                                        .with_default_highlights(&base_para_style, runs)
                                                 };
                                                 let layout_down = styled.layout().clone();
                                                 let layout_move = styled.layout().clone();
@@ -1523,6 +1886,7 @@ impl Render for ReaderView {
 
                                                 div()
                                                     .id(ElementId::from(format!("reader-para-{p_idx}")))
+                                                    .cursor_text()
                                                     .on_mouse_down(
                                                         MouseButton::Left,
                                                         cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -2013,8 +2377,14 @@ impl Render for ReaderView {
             // 4. Tooltip flotante al seleccionar texto con el ratón
             .when_some(self.tooltip_pos, |this, pos| {
                 let top_y = (pos.y - px(46.0)).max(px(44.0));
-                let left_x = (pos.x - px(90.0)).max(px(16.0));
+                let left_x = (pos.x - px(110.0)).max(px(16.0));
                 let ai_enabled = self.ai_enabled_for_book;
+                let quote_open = self.is_quote_popover_open;
+                let sel_color = self.selected_highlight_color.clone();
+                let solid_tooltip_bg = gpui::Hsla {
+                    a: 1.0,
+                    ..tokens.bg
+                };
 
                 this.child(
                     div()
@@ -2022,69 +2392,175 @@ impl Render for ReaderView {
                         .absolute()
                         .top(top_y)
                         .left(left_x)
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(4.0))
-                        .px(px(8.0))
-                        .py(px(5.0))
                         .rounded(px(10.0))
-                        .bg(tokens.bg_elevated)
+                        .bg(solid_tooltip_bg)
                         .border_1()
                         .border_color(tokens.border)
                         .shadow_lg()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| {
                             cx.stop_propagation();
                         })
-                        .when(ai_enabled, |bar| {
-                            bar.child(
-                                div()
-                                    .id("tooltip-ask-ai")
-                                    .px(px(10.0))
-                                    .py(px(4.0))
-                                    .rounded(px(6.0))
-                                    .bg(tokens.accent)
-                                    .text_xs()
-                                    .font_medium()
-                                    .text_color(tokens.bg)
-                                    .cursor_pointer()
-                                    .hover(|s| s.opacity(0.9))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_ai_with_selection(window, cx);
-                                    }))
-                                    .child("✨ Preguntar a la IA"),
-                            )
-                        })
                         .child(
                             div()
-                                .id("tooltip-copy-sel")
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.0))
                                 .px(px(8.0))
-                                .py(px(4.0))
-                                .rounded(px(6.0))
-                                .text_xs()
-                                .text_color(tokens.text)
-                                .cursor_pointer()
-                                .hover(|s| s.bg(tokens.bg_hover))
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.copy_selection(cx);
-                                }))
-                                .child("Copiar"),
-                        )
+                                .py(px(6.0))
+                                .rounded(px(10.0))
+                                .bg(tokens.bg_elevated)
                         .child(
                             div()
-                                .id("tooltip-dismiss-sel")
-                                .px(px(6.0))
-                                .py(px(4.0))
-                                .rounded(px(6.0))
-                                .text_xs()
-                                .text_color(tokens.text_muted)
-                                .cursor_pointer()
-                                .hover(|s| s.bg(tokens.bg_hover))
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.clear_selection_internal();
-                                    cx.notify();
-                                }))
-                                .child("×"),
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(4.0))
+                                .when(ai_enabled, |bar| {
+                                    bar.child(
+                                        div()
+                                            .id("tooltip-ask-ai")
+                                            .px(px(10.0))
+                                            .py(px(4.0))
+                                            .rounded(px(6.0))
+                                            .bg(tokens.accent)
+                                            .text_xs()
+                                            .font_medium()
+                                            .text_color(tokens.bg)
+                                            .cursor_pointer()
+                                            .hover(|s| s.opacity(0.9))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.open_ai_with_selection(window, cx);
+                                            }))
+                                            .child("✨ Preguntar a la IA"),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .id("tooltip-save-quote")
+                                        .px(px(8.0))
+                                        .py(px(4.0))
+                                        .rounded(px(6.0))
+                                        .bg(if quote_open {
+                                            tokens.bg_sunken
+                                        } else {
+                                            gpui_kit::transparent_black()
+                                        })
+                                        .text_xs()
+                                        .font_medium()
+                                        .text_color(tokens.text)
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(tokens.bg_hover))
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            this.is_quote_popover_open = !this.is_quote_popover_open;
+                                            cx.notify();
+                                        }))
+                                        .child("🔖 Guardar cita"),
+                                )
+                                .child(
+                                    div()
+                                        .id("tooltip-copy-sel")
+                                        .px(px(8.0))
+                                        .py(px(4.0))
+                                        .rounded(px(6.0))
+                                        .text_xs()
+                                        .text_color(tokens.text)
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(tokens.bg_hover))
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            this.copy_selection(cx);
+                                        }))
+                                        .child("Copiar"),
+                                )
+                                .child(
+                                    div()
+                                        .id("tooltip-dismiss-sel")
+                                        .px(px(6.0))
+                                        .py(px(4.0))
+                                        .rounded(px(6.0))
+                                        .text_xs()
+                                        .text_color(tokens.text_muted)
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(tokens.bg_hover))
+                                        .on_click(cx.listener(|this, _, _window, cx| {
+                                            this.clear_selection_internal();
+                                            this.is_quote_popover_open = false;
+                                            cx.notify();
+                                        }))
+                                        .child("×"),
+                                ),
+                        )
+                        .when(quote_open, |pop| {
+                            pop.child(
+                                div()
+                                    .w(px(280.0))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.0))
+                                    .pt(px(4.0))
+                                    .border_t_1()
+                                    .border_color(tokens.border)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(6.0))
+                                            .child(
+                                                div()
+                                                    .text_size(px(11.0))
+                                                    .text_color(tokens.text_muted)
+                                                    .child("Color:"),
+                                            )
+                                            .children(["amber", "emerald", "sky", "rose"].into_iter().map(
+                                                |c_name| {
+                                                    let is_sel = sel_color == c_name;
+                                                    let solid =
+                                                        highlight_solid_color(c_name, tokens.accent);
+                                                    div()
+                                                        .id(ElementId::from(format!(
+                                                            "hl-color-{c_name}"
+                                                        )))
+                                                        .w(px(16.0))
+                                                        .h(px(16.0))
+                                                        .rounded_full()
+                                                        .bg(solid)
+                                                        .border_2()
+                                                        .border_color(if is_sel {
+                                                            tokens.text
+                                                        } else {
+                                                            gpui_kit::transparent_black()
+                                                        })
+                                                        .cursor_pointer()
+                                                        .on_click(cx.listener(
+                                                            move |this, _, _window, cx| {
+                                                                this.selected_highlight_color =
+                                                                    c_name.to_string();
+                                                                cx.notify();
+                                                            },
+                                                        ))
+                                                },
+                                            )),
+                                    )
+                                    .child(Input::new(&self.highlight_note_input))
+                                    .child(
+                                        div()
+                                            .id("btn-confirm-save-quote")
+                                            .py(px(5.0))
+                                            .rounded(px(6.0))
+                                            .bg(tokens.accent)
+                                            .text_xs()
+                                            .font_semibold()
+                                            .text_center()
+                                            .text_color(tokens.accent_text)
+                                            .cursor_pointer()
+                                            .hover(|s| s.opacity(0.9))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.save_selection_as_highlight(window, cx);
+                                            }))
+                                            .child("Guardar cita y nota"),
+                                    ),
+                            )
+                        }),
                         ),
                 )
             })
@@ -2254,4 +2730,58 @@ fn parse_inline_markdown(
     }
 
     (clean, runs)
+}
+
+fn highlight_solid_color(color: &str, fallback: Hsla) -> Hsla {
+    match color {
+        "amber" => gpui::hsla(0.11, 0.90, 0.55, 1.0),
+        "emerald" => gpui::hsla(0.42, 0.72, 0.45, 1.0),
+        "sky" => gpui::hsla(0.56, 0.85, 0.56, 1.0),
+        "rose" => gpui::hsla(0.94, 0.82, 0.60, 1.0),
+        _ => fallback,
+    }
+}
+
+fn highlight_bg_color(color: &str, fallback: Hsla) -> Hsla {
+    highlight_solid_color(color, fallback).opacity(0.28)
+}
+
+/// Garantiza que todos los rangos de resaltado sean válidos, estén en límites UTF-8 y no se solapen,
+/// evitando panics en `StyledText::with_default_highlights`.
+fn normalize_non_overlapping_runs(
+    text: &str,
+    runs: Vec<(std::ops::Range<usize>, HighlightStyle)>,
+) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
+    let len = text.len();
+    let mut valid: Vec<(std::ops::Range<usize>, HighlightStyle)> = runs
+        .into_iter()
+        .filter_map(|(r, style)| {
+            let mut s = r.start.min(len);
+            let mut e = r.end.min(len);
+            while s > 0 && !text.is_char_boundary(s) {
+                s -= 1;
+            }
+            while e < len && !text.is_char_boundary(e) {
+                e += 1;
+            }
+            if s < e {
+                Some((s..e, style))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    valid.sort_by_key(|(r, _)| (r.start, r.end));
+
+    let mut out = Vec::with_capacity(valid.len());
+    let mut cursor = 0usize;
+    for (r, style) in valid {
+        let s = r.start.max(cursor);
+        if s < r.end {
+            cursor = r.end;
+            out.push((s..r.end, style));
+        }
+    }
+    out
 }

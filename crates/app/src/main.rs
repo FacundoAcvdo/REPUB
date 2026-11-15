@@ -149,10 +149,11 @@ fn main() {
                 WindowOptions {
                     window_bounds: Some(initial_bounds),
                     titlebar: Some(TitlebarOptions {
-                        title: Some("EPUB Reader".into()),
+                        title: Some("REPUB".into()),
                         ..Default::default()
                     }),
                     window_background: initial_appearance,
+                    app_id: Some("repub".to_string()),
                     ..Default::default()
                 },
                 cx,
@@ -161,6 +162,6 @@ fn main() {
                     cx.new(|cx| AppRoot::new(window, cx))
                 },
             )
-            .expect("falló al abrir la ventana de EPUB Reader");
+            .expect("falló al abrir la ventana de REPUB");
         });
 }

@@ -86,6 +86,19 @@ CREATE TABLE IF NOT EXISTS chapter_summaries (
     PRIMARY KEY (book_id, chapter_index)
 );
 
+CREATE TABLE IF NOT EXISTS highlights (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    page_number INTEGER NOT NULL,
+    paragraph_index INTEGER NOT NULL,
+    char_start INTEGER NOT NULL,
+    char_end INTEGER NOT NULL,
+    selected_text TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    color TEXT NOT NULL DEFAULT 'amber',
+    created_at INTEGER NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS book_chunks_fts USING fts5(
     content,
     book_id UNINDEXED,
@@ -101,6 +114,7 @@ CREATE INDEX IF NOT EXISTS idx_progress_status ON reading_progress(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_date ON reading_sessions(date);
 CREATE INDEX IF NOT EXISTS idx_bookmarks_book ON bookmarks(book_id, page_number);
 CREATE INDEX IF NOT EXISTS idx_chunks_book_page ON book_chunks(book_id, page_start);
+CREATE INDEX IF NOT EXISTS idx_highlights_book_page ON highlights(book_id, page_number);
 "#;
 
 fn has_incompatible_pk(conn: &Connection, table: &str, pk_col: &str) -> CoreResult<bool> {
@@ -280,6 +294,18 @@ pub fn run_migrations(conn: &mut Connection) -> CoreResult<()> {
                 summary TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 PRIMARY KEY (book_id, chapter_index)
+            );
+            CREATE TABLE IF NOT EXISTS highlights (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+                page_number INTEGER NOT NULL,
+                paragraph_index INTEGER NOT NULL,
+                char_start INTEGER NOT NULL,
+                char_end INTEGER NOT NULL,
+                selected_text TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                color TEXT NOT NULL DEFAULT 'amber',
+                created_at INTEGER NOT NULL
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS book_chunks_fts USING fts5(
                 content,

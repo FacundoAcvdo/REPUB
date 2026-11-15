@@ -2,7 +2,7 @@ pub struct I18n;
 
 impl I18n {
     // App info
-    pub const APP_TITLE: &'static str = "EPUB Reader";
+    pub const APP_TITLE: &'static str = "REPUB";
 
     // Nav
     pub const NAV_HOME: &'static str = "Inicio";

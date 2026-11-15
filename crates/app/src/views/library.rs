@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use epub_core::db::{BookRepository, Database, ProgressRepository};
 use epub_core::domain::book::{Book, BookFilter, BookSort};
-use epub_core::mock::books::generate_mock_catalog;
 use epub_core::services::{BookImportService, LibraryStorage};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::StyledExt as _;
@@ -30,7 +29,6 @@ pub struct LibraryView {
     filter: BookFilter,
     sort: BookSort,
     is_grid_view: bool,
-    is_1000_mode: bool,
     notification: Option<String>,
     grid_scroll_handle: UniformListScrollHandle,
     list_scroll_handle: UniformListScrollHandle,
@@ -61,7 +59,6 @@ impl LibraryView {
             filter: BookFilter::All,
             sort: BookSort::TitleAsc,
             is_grid_view: true,
-            is_1000_mode: false,
             notification: None,
             grid_scroll_handle: UniformListScrollHandle::new(),
             list_scroll_handle: UniformListScrollHandle::new(),
@@ -107,18 +104,12 @@ impl LibraryView {
     }
 
     pub fn reload_from_db(&mut self, cx: &mut Context<Self>) {
-        if !self.is_1000_mode {
-            self.load_from_sqlite();
-            cx.notify();
-        }
+        self.load_from_sqlite();
+        cx.notify();
     }
 
     fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
-        if self.is_1000_mode {
-            self.update_filtered_books();
-        } else {
-            self.load_from_sqlite();
-        }
+        self.load_from_sqlite();
         cx.notify();
     }
 
@@ -130,49 +121,6 @@ impl LibraryView {
         self.search_input.update(cx, |input, cx| {
             input.focus(window, cx);
         });
-    }
-
-    fn update_filtered_books(&mut self) {
-        let query = self.search_query.trim().to_lowercase();
-        let current_filter = self.filter;
-
-        let mut result: Vec<Book> = self
-            .books
-            .iter()
-            .filter(|b| b.matches_filter(current_filter))
-            .filter(|b| {
-                if query.is_empty() {
-                    true
-                } else {
-                    b.matches_search(&query)
-                }
-            })
-            .cloned()
-            .collect();
-
-        match self.sort {
-            BookSort::TitleAsc => {
-                result.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
-            }
-            BookSort::TitleDesc => {
-                result.sort_by(|a, b| b.title.to_lowercase().cmp(&a.title.to_lowercase()));
-            }
-            BookSort::AuthorAsc => {
-                result.sort_by(|a, b| a.author.to_lowercase().cmp(&b.author.to_lowercase()));
-            }
-            BookSort::RecentProgress => {
-                result.sort_by(|a, b| {
-                    b.progress_pct()
-                        .partial_cmp(&a.progress_pct())
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-            }
-            BookSort::TotalPagesDesc => {
-                result.sort_by(|a, b| b.total_pages.cmp(&a.total_pages));
-            }
-        }
-
-        self.filtered_books = result;
     }
 
     pub fn set_filter(&mut self, filter: BookFilter, cx: &mut Context<Self>) {
@@ -198,29 +146,7 @@ impl LibraryView {
         cx.notify();
     }
 
-    pub fn toggle_1000_catalog(&mut self, cx: &mut Context<Self>) {
-        self.is_1000_mode = !self.is_1000_mode;
-        if self.is_1000_mode {
-            self.books = generate_mock_catalog(1000);
-            self.stored_meta.clear();
-            self.notification = Some("Catálogo de 1.000 libros cargado. Grilla virtualizada activa.".into());
-            self.update_filtered_books();
-            cx.notify();
-        } else {
-            self.notification = None;
-            self.load_from_sqlite();
-            cx.notify();
-        }
-    }
-
     pub fn toggle_favorite(&mut self, book_id: &str, cx: &mut Context<Self>) {
-        if self.is_1000_mode {
-            let entry = self.stored_meta.entry(book_id.to_string()).or_default();
-            entry.is_favorite = !entry.is_favorite;
-            cx.notify();
-            return;
-        }
-
         if let Some(db) = Self::open_default_db() {
             if ProgressRepository::toggle_favorite(db.conn(), book_id).is_ok() {
                 self.load_from_sqlite();
@@ -291,7 +217,6 @@ impl LibraryView {
             let _ = this.update(cx, |view, cx| {
                 match import_result {
                     Ok((imported, last_title, errors)) => {
-                        view.is_1000_mode = false;
                         view.load_from_sqlite();
                         view.notification = if imported == 1 && errors.is_empty() {
                             Some(format!("Libro importado: \"{}\"", last_title))
@@ -342,11 +267,7 @@ impl Render for LibraryView {
         let tokens = *theme_state.tokens();
         let radius = theme_state.radius();
 
-        let total_count = if self.is_1000_mode {
-            self.books.len()
-        } else {
-            self.total_db_count
-        };
+        let total_count = self.total_db_count;
         let filtered_count = self.filtered_books.len();
 
         let view_entity = cx.entity().clone();
@@ -354,7 +275,6 @@ impl Render for LibraryView {
         let view_filter = view_entity.clone();
         let view_sort = view_entity.clone();
         let view_mode = view_entity.clone();
-        let view_1000 = view_entity.clone();
         let view_import = view_entity.clone();
         let view_clear_notif = view_entity.clone();
 
@@ -366,7 +286,6 @@ impl Render for LibraryView {
             self.filter,
             self.sort,
             self.is_grid_view,
-            self.is_1000_mode,
             total_count,
             filtered_count,
         )
@@ -378,9 +297,6 @@ impl Render for LibraryView {
         })
         .on_toggle_view(move |is_grid, _, cx| {
             view_mode.update(cx, |this, cx| this.toggle_view_mode(is_grid, cx));
-        })
-        .on_toggle_1000(move |_, cx| {
-            view_1000.update(cx, |this, cx| this.toggle_1000_catalog(cx));
         })
         .on_import(move |_, cx| {
             view_import.update(cx, |this, cx| this.import_epub_dialog(cx));

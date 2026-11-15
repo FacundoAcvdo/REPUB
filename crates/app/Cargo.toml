@@ -3,6 +3,10 @@ name = "epub-app"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "repub"
+path = "src/main.rs"
+
 [dependencies]
 epub-core = { path = "../core" }
 gpui-kit = "0.7"

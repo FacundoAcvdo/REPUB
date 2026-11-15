@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=REPUB
+Comment=Lector de EPUB con asistente de lectura IA anti-spoilers
+Exec=repub
+Icon=repub
+Terminal=false
+Categories=Office;Viewer;Literature;
+StartupWMClass=repub
+Keywords=epub;ebook;reader;book;repub;
