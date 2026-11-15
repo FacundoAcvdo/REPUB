@@ -1,7 +1,9 @@
 use std::rc::Rc;
+use epub_core::db::{BookRepository, Database};
 use epub_core::domain::book::Book;
+use epub_core::epub::PaginationConfig;
 use epub_core::mock::books::mock_books;
-use epub_core::mock::reading_content::get_page_content;
+use epub_core::services::ReaderService;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::Icon;
@@ -37,9 +39,35 @@ impl ReaderView {
         }
     }
 
-    pub fn load_book(&mut self, book: Book, cx: &mut Context<Self>) {
-        self.current_page = book.current_page.max(1).min(book.total_pages);
-        self.total_pages = book.total_pages;
+    pub fn load_book(&mut self, mut book: Book, cx: &mut Context<Self>) {
+        if book.chapters.is_empty() {
+            let reader_settings = &ReaderSettingsState::global(cx).settings;
+            let config = PaginationConfig::from_reader_settings(
+                reader_settings.font_size,
+                reader_settings.line_height,
+                reader_settings.max_line_width,
+            );
+
+            if let Some(db_path) = Database::default_db_path() {
+                if db_path.exists() {
+                    if let Ok(db) = Database::open(&db_path) {
+                        if let Ok(Some(stored)) = BookRepository::get_by_id(db.conn(), &book.id) {
+                            if let Some(file_path) = stored.file_path {
+                                if let Ok(paginated) =
+                                    ReaderService::load_book_pages(&file_path, config)
+                                {
+                                    book.chapters = paginated.chapters;
+                                    book.total_pages = paginated.total_pages.max(1);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        self.total_pages = book.total_pages.max(1);
+        self.current_page = book.current_page.max(1).min(self.total_pages);
         self.book = Some(book);
         cx.notify();
     }
@@ -135,8 +163,29 @@ impl Render for ReaderView {
             0.0
         };
 
-        // Contenido de la página actual
-        let page_content = get_page_content(&book_title, current_page, total_pages);
+        // Contenido de la página actual (capítulos reales paginados o fallback mock)
+        let page_content = match &self.book {
+            Some(book) => ReaderService::resolve_page(book, current_page),
+            None => ReaderService::resolve_page(
+                &Book {
+                    id: String::new(),
+                    title: book_title.clone(),
+                    author: book_author.clone(),
+                    total_pages,
+                    current_page,
+                    genre: epub_core::domain::book::Genre::Fiction,
+                    cover_palette: epub_core::domain::book::CoverPalette {
+                        primary: 0,
+                        secondary: 0,
+                        accent: 0,
+                        text: 0,
+                    },
+                    synopsis: String::new(),
+                    chapters: Vec::new(),
+                },
+                current_page,
+            ),
+        };
 
         // Tipografía y apariencia según ajustes de Hoja y nivel de Zoom interactivo
         let zoom = self.zoom_level;

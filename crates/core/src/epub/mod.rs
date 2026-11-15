@@ -1,6 +1,10 @@
+pub mod paginator;
 pub mod parser;
+pub mod xhtml;
 
+pub use paginator::{PaginatedBook, PaginationConfig, Paginator, ResolvedPage};
 pub use parser::{EpubParser, ParsedChapter, ParsedEpub, ParsedMetadata, TocEntry};
+pub use xhtml::extract_paragraphs;
 
 #[cfg(test)]
 pub(crate) mod tests {
