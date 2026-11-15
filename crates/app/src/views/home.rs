@@ -1,8 +1,9 @@
 use std::rc::Rc;
+use epub_core::db::Database;
 use epub_core::domain::book::Book;
 use epub_core::domain::stats::ReadingStats;
 use epub_core::mock::books::mock_books;
-use epub_core::mock::stats::mock_stats;
+use epub_core::services::StatsService;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::Icon;
@@ -23,15 +24,58 @@ pub struct HomeView {
 
 impl HomeView {
     pub fn new() -> Self {
-        let all_books = mock_books();
-        let current_book = all_books.into_iter().next().unwrap();
+        let (stats, current_book) = Self::load_from_db();
 
         Self {
-            stats: mock_stats(),
+            stats,
             current_book,
             notification: None,
             on_open_book: None,
         }
+    }
+
+    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        let (stats, current_book) = Self::load_from_db();
+        self.stats = stats;
+        self.current_book = current_book;
+        cx.notify();
+    }
+
+    fn load_from_db() -> (ReadingStats, Book) {
+        let fallback_book = mock_books().into_iter().next().unwrap();
+        let today = StatsService::today_iso();
+
+        if let Some(db_path) = Database::default_db_path() {
+            if db_path.exists() {
+                if let Ok(db) = Database::open(&db_path) {
+                    let stats = StatsService::compute_stats(db.conn(), &today).unwrap_or(ReadingStats {
+                        books_completed: 0,
+                        pages_read_total: 0,
+                        pages_read_this_year: 0,
+                        reading_hours: 0.0,
+                        current_streak_days: 0,
+                        weekly_activity: [0; 7],
+                    });
+                    let book = StatsService::get_continue_reading_book(db.conn())
+                        .ok()
+                        .flatten()
+                        .unwrap_or(fallback_book);
+                    return (stats, book);
+                }
+            }
+        }
+
+        (
+            ReadingStats {
+                books_completed: 0,
+                pages_read_total: 0,
+                pages_read_this_year: 0,
+                reading_hours: 0.0,
+                current_streak_days: 0,
+                weekly_activity: [0; 7],
+            },
+            fallback_book,
+        )
     }
 
     pub fn set_on_open_book(&mut self, handler: impl Fn(Book, &mut Window, &mut App) + 'static) {
@@ -115,7 +159,7 @@ impl Render for HomeView {
                                             .text_xs()
                                             .font_medium()
                                             .text_color(tokens.text_muted)
-                                            .child("Jueves, 12 de noviembre"),
+                                            .child(StatsService::today_display_es()),
                                     ),
                             ),
                     )

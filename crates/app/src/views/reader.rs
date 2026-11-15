@@ -1,7 +1,8 @@
 use std::rc::Rc;
+use std::time::Instant;
 use epub_core::db::{BookRepository, Database};
 use epub_core::domain::book::Book;
-use epub_core::epub::PaginationConfig;
+use epub_core::epub::{PaginatedBook, PaginationConfig};
 use epub_core::mock::books::mock_books;
 use epub_core::services::ReaderService;
 use gpui_kit::assets::IconName;
@@ -17,6 +18,7 @@ pub struct ReaderView {
     current_page: u32,
     total_pages: u32,
     zoom_level: f32,
+    last_activity_at: Instant,
     focus_handle: FocusHandle,
     on_close: Option<Rc<dyn Fn(&mut Window, &mut App) + 'static>>,
 }
@@ -34,6 +36,7 @@ impl ReaderView {
             current_page,
             total_pages,
             zoom_level: 1.0,
+            last_activity_at: Instant::now(),
             focus_handle: cx.focus_handle(),
             on_close: None,
         }
@@ -68,8 +71,40 @@ impl ReaderView {
 
         self.total_pages = book.total_pages.max(1);
         self.current_page = book.current_page.max(1).min(self.total_pages);
+        self.last_activity_at = Instant::now();
         self.book = Some(book);
         cx.notify();
+    }
+
+    fn persist_progress(&mut self, pages_delta: u32) {
+        let elapsed_secs = self.last_activity_at.elapsed().as_secs();
+        self.last_activity_at = Instant::now();
+
+        let Some(ref book) = self.book else {
+            return;
+        };
+
+        let chapter_idx = if !book.chapters.is_empty() {
+            PaginatedBook::from_chapters(book.chapters.clone())
+                .chapter_index_for_page(self.current_page)
+                .unwrap_or(0) as u32
+        } else {
+            let pages_per_chapter = 25.max(self.total_pages / 12);
+            self.current_page.saturating_sub(1) / pages_per_chapter
+        };
+
+        if let Some(db_path) = Database::default_db_path() {
+            if let Ok(mut db) = Database::open(&db_path) {
+                let _ = ReaderService::record_reading_activity(
+                    &mut db,
+                    book,
+                    self.current_page,
+                    chapter_idx,
+                    pages_delta,
+                    elapsed_secs,
+                );
+            }
+        }
     }
 
     pub fn on_close(
@@ -90,6 +125,7 @@ impl ReaderView {
             if let Some(ref mut b) = self.book {
                 b.current_page = self.current_page;
             }
+            self.persist_progress(0);
             cx.notify();
         }
     }
@@ -100,6 +136,7 @@ impl ReaderView {
             if let Some(ref mut b) = self.book {
                 b.current_page = self.current_page;
             }
+            self.persist_progress(1);
             cx.notify();
         }
     }
@@ -124,6 +161,7 @@ impl ReaderView {
     }
 
     pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.persist_progress(0);
         if let Some(ref handler) = self.on_close {
             let cb = handler.clone();
             cb(window, cx);

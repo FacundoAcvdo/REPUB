@@ -95,6 +95,9 @@ impl ShellView {
         self.back_history.push(self.current_dest);
         self.forward_history.clear();
         self.current_dest = dest;
+        if self.current_dest == NavDestination::Home {
+            self.home_view.update(cx, |home, cx| home.refresh(cx));
+        }
         cx.notify();
     }
 
@@ -102,6 +105,9 @@ impl ShellView {
         if let Some(prev) = self.back_history.pop() {
             self.forward_history.push(self.current_dest);
             self.current_dest = prev;
+            if self.current_dest == NavDestination::Home {
+                self.home_view.update(cx, |home, cx| home.refresh(cx));
+            }
             cx.notify();
         } else {
             // Si el historial está vacío (ej. vino directamente al lector), vuelve a Biblioteca
@@ -116,6 +122,9 @@ impl ShellView {
         if let Some(next) = self.forward_history.pop() {
             self.back_history.push(self.current_dest);
             self.current_dest = next;
+            if self.current_dest == NavDestination::Home {
+                self.home_view.update(cx, |home, cx| home.refresh(cx));
+            }
             cx.notify();
         }
     }

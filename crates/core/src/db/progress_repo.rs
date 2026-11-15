@@ -184,6 +184,20 @@ impl ProgressRepository {
         Ok(())
     }
 
+    /// Incrementa segundos activos de lectura en `reading_progress` sin esperar a completar un minuto.
+    pub fn add_reading_seconds(conn: &Connection, book_id: &str, seconds: u64) -> CoreResult<()> {
+        if seconds == 0 {
+            return Ok(());
+        }
+        conn.execute(
+            "UPDATE reading_progress
+             SET reading_time_seconds = reading_time_seconds + ?1
+             WHERE book_id = ?2",
+            params![seconds as i64, book_id],
+        )?;
+        Ok(())
+    }
+
     /// Obtiene todas las sesiones registradas desde una fecha ISO inclusive (`YYYY-MM-DD`).
     pub fn get_sessions_since(
         conn: &Connection,

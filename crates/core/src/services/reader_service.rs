@@ -1,9 +1,12 @@
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::db::{BookRepository, Database, ProgressRepository};
 use crate::domain::book::Book;
 use crate::epub::{EpubParser, PaginatedBook, PaginationConfig, Paginator};
 use crate::error::CoreResult;
 use crate::mock::reading_content::{get_page_content, PageContent};
+use crate::services::StatsService;
 
 pub struct ReaderService;
 
@@ -32,6 +35,44 @@ impl ReaderService {
         }
 
         get_page_content(&book.title, page_number, book.total_pages)
+    }
+
+    /// Persiste el progreso actual del libro, la última marca temporal y la actividad de la sesión
+    /// en SQLite. Si el libro todavía no existía en la base local, lo registra automáticamente.
+    pub fn record_reading_activity(
+        db: &mut Database,
+        book: &Book,
+        current_page: u32,
+        current_chapter: u32,
+        pages_delta: u32,
+        elapsed_seconds: u64,
+    ) -> CoreResult<()> {
+        if BookRepository::get_by_id(db.conn(), &book.id)?.is_none() {
+            BookRepository::upsert(db.conn_mut(), book, None, None, "es")?;
+        }
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        ProgressRepository::update_page(
+            db.conn(),
+            &book.id,
+            current_page,
+            current_chapter,
+            book.total_pages,
+            now,
+        )?;
+
+        let bounded_secs = elapsed_seconds.min(300);
+        if pages_delta > 0 || bounded_secs > 0 {
+            let today = StatsService::today_iso();
+            ProgressRepository::record_session(db.conn_mut(), &book.id, &today, 0, pages_delta)?;
+            ProgressRepository::add_reading_seconds(db.conn(), &book.id, bounded_secs)?;
+        }
+
+        Ok(())
     }
 }
 
