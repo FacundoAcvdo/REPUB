@@ -6,6 +6,7 @@ pub enum CoreError {
     Database(rusqlite::Error),
     Serialization(serde_json::Error),
     Io(std::io::Error),
+    EpubParse(String),
     NotFound(String),
     InvalidInput(String),
 }
@@ -18,6 +19,7 @@ impl fmt::Display for CoreError {
             CoreError::Database(err) => write!(f, "Error de base de datos: {err}"),
             CoreError::Serialization(err) => write!(f, "Error de serialización: {err}"),
             CoreError::Io(err) => write!(f, "Error de entrada/salida: {err}"),
+            CoreError::EpubParse(msg) => write!(f, "Error al leer EPUB: {msg}"),
             CoreError::NotFound(msg) => write!(f, "Recurso no encontrado: {msg}"),
             CoreError::InvalidInput(msg) => write!(f, "Entrada inválida: {msg}"),
         }
@@ -30,7 +32,7 @@ impl std::error::Error for CoreError {
             CoreError::Database(err) => Some(err),
             CoreError::Serialization(err) => Some(err),
             CoreError::Io(err) => Some(err),
-            CoreError::NotFound(_) | CoreError::InvalidInput(_) => None,
+            CoreError::EpubParse(_) | CoreError::NotFound(_) | CoreError::InvalidInput(_) => None,
         }
     }
 }
@@ -50,5 +52,11 @@ impl From<serde_json::Error> for CoreError {
 impl From<std::io::Error> for CoreError {
     fn from(err: std::io::Error) -> Self {
         Self::Io(err)
+    }
+}
+
+impl From<epub::doc::DocError> for CoreError {
+    fn from(err: epub::doc::DocError) -> Self {
+        Self::EpubParse(err.to_string())
     }
 }
