@@ -43,6 +43,16 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS bookmarks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    page_number INTEGER NOT NULL,
+    chapter_index INTEGER NOT NULL DEFAULT 0,
+    chapter_title TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
 "#;
 
 const V1_INDEXES: &str = r#"
@@ -51,6 +61,7 @@ CREATE INDEX IF NOT EXISTS idx_books_author ON books(author);
 CREATE INDEX IF NOT EXISTS idx_progress_last_read ON reading_progress(last_read_at DESC);
 CREATE INDEX IF NOT EXISTS idx_progress_status ON reading_progress(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_date ON reading_sessions(date);
+CREATE INDEX IF NOT EXISTS idx_bookmarks_book ON bookmarks(book_id, page_number);
 "#;
 
 fn has_incompatible_pk(conn: &Connection, table: &str, pk_col: &str) -> CoreResult<bool> {
@@ -170,6 +181,17 @@ pub fn run_migrations(conn: &mut Connection) -> CoreResult<()> {
         tx.commit()?;
     } else {
         reset_incompatible_legacy_tables(conn)?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS bookmarks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+                page_number INTEGER NOT NULL,
+                chapter_index INTEGER NOT NULL DEFAULT 0,
+                chapter_title TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL
+            );",
+        )?;
         ensure_v1_columns(conn)?;
         conn.execute_batch(V1_INDEXES)?;
     }

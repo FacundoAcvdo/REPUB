@@ -1,5 +1,5 @@
 use std::rc::Rc;
-use epub_core::db::Database;
+use epub_core::db::{BookRepository, Database};
 use epub_core::domain::book::Book;
 use epub_core::domain::stats::ReadingStats;
 use epub_core::mock::books::mock_books;
@@ -18,30 +18,33 @@ use crate::theme::state::ThemeState;
 pub struct HomeView {
     stats: ReadingStats,
     current_book: Book,
+    current_cover_path: Option<String>,
     notification: Option<String>,
     on_open_book: Option<Rc<dyn Fn(Book, &mut Window, &mut App) + 'static>>,
 }
 
 impl HomeView {
     pub fn new() -> Self {
-        let (stats, current_book) = Self::load_from_db();
+        let (stats, current_book, current_cover_path) = Self::load_from_db();
 
         Self {
             stats,
             current_book,
+            current_cover_path,
             notification: None,
             on_open_book: None,
         }
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        let (stats, current_book) = Self::load_from_db();
+        let (stats, current_book, current_cover_path) = Self::load_from_db();
         self.stats = stats;
         self.current_book = current_book;
+        self.current_cover_path = current_cover_path;
         cx.notify();
     }
 
-    fn load_from_db() -> (ReadingStats, Book) {
+    fn load_from_db() -> (ReadingStats, Book, Option<String>) {
         let fallback_book = mock_books().into_iter().next().unwrap();
         let today = StatsService::today_iso();
 
@@ -60,7 +63,11 @@ impl HomeView {
                         .ok()
                         .flatten()
                         .unwrap_or(fallback_book);
-                    return (stats, book);
+                    let cover_path = BookRepository::get_by_id(db.conn(), &book.id)
+                        .ok()
+                        .flatten()
+                        .and_then(|s| s.cover_path);
+                    return (stats, book, cover_path);
                 }
             }
         }
@@ -75,6 +82,7 @@ impl HomeView {
                 weekly_activity: [0; 7],
             },
             fallback_book,
+            None,
         )
     }
 
@@ -235,6 +243,7 @@ impl Render for HomeView {
                                     tokens,
                                     radius,
                                 )
+                                .cover_path(self.current_cover_path.clone())
                                 .on_read(move |window, cx| {
                                     if let Some(ref handler) = on_open_book {
                                         handler(book_to_read.clone(), window, cx);

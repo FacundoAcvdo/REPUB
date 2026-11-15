@@ -49,6 +49,7 @@ fn hex_to_hsla(hex: u32, alpha: f32) -> Hsla {
 pub struct ContinueReadingCard {
     id: ElementId,
     book: Book,
+    cover_path: Option<String>,
     tokens: ThemeTokens,
     radius: Pixels,
     on_read: Option<Rc<dyn Fn(&mut Window, &mut App) + 'static>>,
@@ -64,10 +65,16 @@ impl ContinueReadingCard {
         Self {
             id: id.into(),
             book,
+            cover_path: None,
             tokens,
             radius,
             on_read: None,
         }
+    }
+
+    pub fn cover_path(mut self, path: Option<String>) -> Self {
+        self.cover_path = path;
+        self
     }
 
     pub fn on_read(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
@@ -83,6 +90,11 @@ impl RenderOnce for ContinueReadingCard {
         let book = &self.book;
         let progress = book.progress_pct();
         let on_read = self.on_read;
+        let real_cover = self
+            .cover_path
+            .filter(|p| !p.is_empty() && std::path::Path::new(p).exists())
+            .map(std::path::PathBuf::from);
+        let has_real_cover = real_cover.is_some();
 
         let primary_color = hex_to_hsla(book.cover_palette.primary, 1.0);
         let secondary_color = hex_to_hsla(book.cover_palette.secondary, 1.0);
@@ -117,6 +129,15 @@ impl RenderOnce for ContinueReadingCard {
                     .overflow_hidden()
                     .relative()
                     .shadow_md()
+                    .when_some(real_cover, |this, path| {
+                        this.child(
+                            img(path)
+                                .absolute()
+                                .inset_0()
+                                .size_full()
+                                .object_fit(ObjectFit::Cover),
+                        )
+                    })
                     // Spine crease shadow on left edge
                     .child(
                         div()
@@ -127,59 +148,60 @@ impl RenderOnce for ContinueReadingCard {
                             .w(px(7.0))
                             .bg(hsla(0.0, 0.0, 0.0, 0.28)),
                     )
-                    // Decorative geometric circle
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .right_0()
-                            .w(px(65.0))
-                            .h(px(65.0))
-                            .rounded_full()
-                            .bg(secondary_color)
-                            .opacity(0.35),
-                    )
-                    // Content container
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .justify_between()
-                            .size_full()
-                            .p(px(10.0))
-                            .pl(px(14.0))
-                            .child(
-                                div()
-                                    .px(px(6.0))
-                                    .py(px(2.0))
-                                    .rounded_full()
-                                    .bg(hsla(0.0, 0.0, 0.0, 0.45))
-                                    .text_xs()
-                                    .font_bold()
-                                    .text_color(hsla(0.0, 0.0, 1.0, 0.95))
-                                    .child(book.genre.name_es()),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.0))
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_bold()
-                                            .text_color(hsla(0.0, 0.0, 1.0, 0.95))
-                                            .line_clamp(2)
-                                            .child(book.title.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(hsla(0.0, 0.0, 1.0, 0.75))
-                                            .child(book.author.clone()),
-                                    ),
-                            ),
-                    ),
+                    // Decorative geometric circle & procedural text (only when no real cover)
+                    .when(!has_real_cover, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .right_0()
+                                .w(px(65.0))
+                                .h(px(65.0))
+                                .rounded_full()
+                                .bg(secondary_color)
+                                .opacity(0.35),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .justify_between()
+                                .size_full()
+                                .p(px(10.0))
+                                .pl(px(14.0))
+                                .child(
+                                    div()
+                                        .px(px(6.0))
+                                        .py(px(2.0))
+                                        .rounded_full()
+                                        .bg(hsla(0.0, 0.0, 0.0, 0.45))
+                                        .text_xs()
+                                        .font_bold()
+                                        .text_color(hsla(0.0, 0.0, 1.0, 0.95))
+                                        .child(book.genre.name_es()),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.0))
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .font_bold()
+                                                .text_color(hsla(0.0, 0.0, 1.0, 0.95))
+                                                .line_clamp(2)
+                                                .child(book.title.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(hsla(0.0, 0.0, 1.0, 0.75))
+                                                .child(book.author.clone()),
+                                        ),
+                                ),
+                        )
+                    }),
             )
             // Right: Book Info, Progress, and Action Button
             .child(

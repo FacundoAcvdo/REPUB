@@ -1,3 +1,4 @@
+use epub_core::db::{Database, SettingsRepository};
 use epub_core::domain::settings::{
     AnimationSpeed, AppSettings, CornerRadiusStyle, ReduceMotion,
 };
@@ -58,15 +59,25 @@ pub struct SettingsView {
 
 impl SettingsView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut settings = Database::default_db_path()
+            .and_then(|path| Database::open(path).ok())
+            .and_then(|db| SettingsRepository::load_settings(db.conn()).ok())
+            .unwrap_or_else(AppSettings::default);
+        settings.reader = ReaderSettingsState::global(cx).settings.clone();
+
+        let initial_model = settings.ai.model.clone();
+        let initial_api_key = settings.ai.api_key.clone();
+
         let model_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .default_value("gpt-4o")
+                .default_value(initial_model)
                 .placeholder("Nombre del modelo (ej. gpt-4o, claude-3-7-sonnet)...")
         });
 
         cx.subscribe(&model_input, |this, input, event: &InputEvent, cx| {
             if let InputEvent::Change = event {
                 this.settings.ai.model = input.read(cx).value().to_string();
+                this.persist();
                 cx.notify();
             }
         })
@@ -74,21 +85,18 @@ impl SettingsView {
 
         let api_key_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .default_value("sk-••••••••••••••••••••••••")
+                .default_value(initial_api_key)
                 .placeholder("Ingresa tu clave de API...")
         });
 
         cx.subscribe(&api_key_input, |this, input, event: &InputEvent, cx| {
             if let InputEvent::Change = event {
                 this.settings.ai.api_key = input.read(cx).value().to_string();
+                this.persist();
                 cx.notify();
             }
         })
         .detach();
-
-        let reader_settings = ReaderSettingsState::global(cx).settings.clone();
-        let mut settings = AppSettings::default();
-        settings.reader = reader_settings;
 
         Self {
             active_tab: SettingsTab::General,
@@ -97,6 +105,14 @@ impl SettingsView {
             is_font_select_open: false,
             model_input,
             api_key_input,
+        }
+    }
+
+    fn persist(&self) {
+        if let Some(db_path) = Database::default_db_path() {
+            if let Ok(db) = Database::open(db_path) {
+                let _ = SettingsRepository::save_settings(db.conn(), &self.settings);
+            }
         }
     }
 
@@ -293,6 +309,7 @@ impl SettingsView {
                                         } else {
                                             "Inicio".into()
                                         };
+                                        this.persist();
                                         cx.notify();
                                     });
                                 })
@@ -333,6 +350,7 @@ impl SettingsView {
                                             "never" => ReduceMotion::Never,
                                             _ => ReduceMotion::System,
                                         };
+                                        this.persist();
                                         cx.notify();
                                     });
                                 })
@@ -368,6 +386,7 @@ impl SettingsView {
                                             "fast" => AnimationSpeed::Fast,
                                             _ => AnimationSpeed::Standard,
                                         };
+                                        this.persist();
                                         cx.notify();
                                     });
                                 })
@@ -437,6 +456,7 @@ impl SettingsView {
                                             ThemeState::update_theme(Some(window), cx, p_id);
                                             view_theme.update(cx, |this, cx| {
                                                 this.settings.appearance.theme_id = p_id.into();
+                                                this.persist();
                                                 cx.notify();
                                             });
                                         })
@@ -483,6 +503,7 @@ impl SettingsView {
                                             ThemeState::update_corner_radius(cx, s);
                                             view_corner.update(cx, |this, cx| {
                                                 this.settings.appearance.corner_radius = s;
+                                                this.persist();
                                                 cx.notify();
                                             });
                                         })
@@ -590,6 +611,7 @@ impl SettingsView {
                                                 ThemeState::update_window_opacity(Some(window), cx, val);
                                                 view_op.update(cx, |this, cx| {
                                                     this.settings.appearance.window_opacity = val;
+                                                    this.persist();
                                                     cx.notify();
                                                 });
                                             })
@@ -773,6 +795,7 @@ impl SettingsView {
                                                 view_pill.update(cx, |this, cx| {
                                                     this.settings.ai.provider = p;
                                                     this.test_connection_msg = None;
+                                                    this.persist();
                                                     cx.notify();
                                                 });
                                             })
@@ -1137,6 +1160,7 @@ impl SettingsView {
                                                         this.settings.reader.font_family = "Serif (Georgia)".into();
                                                         this.is_font_select_open = false;
                                                         ReaderSettingsState::update(cx, this.settings.reader.clone());
+                                                        this.persist();
                                                         cx.notify();
                                                     });
                                                 })
@@ -1162,6 +1186,7 @@ impl SettingsView {
                                                         this.settings.reader.font_family = "Sans (Inter)".into();
                                                         this.is_font_select_open = false;
                                                         ReaderSettingsState::update(cx, this.settings.reader.clone());
+                                                        this.persist();
                                                         cx.notify();
                                                     });
                                                 })
@@ -1187,6 +1212,7 @@ impl SettingsView {
                                                         this.settings.reader.font_family = "Mono (JetBrains)".into();
                                                         this.is_font_select_open = false;
                                                         ReaderSettingsState::update(cx, this.settings.reader.clone());
+                                                        this.persist();
                                                         cx.notify();
                                                     });
                                                 })
@@ -1215,6 +1241,7 @@ impl SettingsView {
                                             if this.settings.reader.font_size > 6 {
                                                 this.settings.reader.font_size -= 1;
                                                 ReaderSettingsState::update(cx, this.settings.reader.clone());
+                                                this.persist();
                                                 cx.notify();
                                             }
                                         });
@@ -1224,6 +1251,7 @@ impl SettingsView {
                                             if this.settings.reader.font_size < 36 {
                                                 this.settings.reader.font_size += 1;
                                                 ReaderSettingsState::update(cx, this.settings.reader.clone());
+                                                this.persist();
                                                 cx.notify();
                                             }
                                         });
@@ -1246,6 +1274,7 @@ impl SettingsView {
                                             if this.settings.reader.line_height > 1.25 {
                                                 this.settings.reader.line_height -= 0.1;
                                                 ReaderSettingsState::update(cx, this.settings.reader.clone());
+                                                this.persist();
                                                 cx.notify();
                                             }
                                         });
@@ -1255,6 +1284,7 @@ impl SettingsView {
                                             if this.settings.reader.line_height < 2.35 {
                                                 this.settings.reader.line_height += 0.1;
                                                 ReaderSettingsState::update(cx, this.settings.reader.clone());
+                                                this.persist();
                                                 cx.notify();
                                             }
                                         });
@@ -1281,6 +1311,7 @@ impl SettingsView {
                                         view_j.update(cx, |this, cx| {
                                             this.settings.reader.justify_text = *checked;
                                             ReaderSettingsState::update(cx, this.settings.reader.clone());
+                                            this.persist();
                                             cx.notify();
                                         });
                                     })
@@ -1301,6 +1332,7 @@ impl SettingsView {
                                         view_t.update(cx, |this, cx| {
                                             this.settings.reader.follow_app_theme = *checked;
                                             ReaderSettingsState::update(cx, this.settings.reader.clone());
+                                            this.persist();
                                             cx.notify();
                                         });
                                     })

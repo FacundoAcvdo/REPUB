@@ -1,12 +1,13 @@
 use std::rc::Rc;
 use std::time::Instant;
-use epub_core::db::{BookRepository, Database};
+use epub_core::db::{BookRepository, BookmarkRecord, BookmarkRepository, Database};
 use epub_core::domain::book::Book;
 use epub_core::epub::{PaginatedBook, PaginationConfig};
 use epub_core::mock::books::mock_books;
 use epub_core::services::ReaderService;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::StyledExt as _;
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -14,29 +15,46 @@ use gpui_kit::*;
 use crate::theme::reader_settings::ReaderSettingsState;
 use crate::theme::state::ThemeState;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReaderPanelTab {
+    Toc,
+    Bookmarks,
+}
+
 pub struct ReaderView {
     book: Option<Book>,
     current_page: u32,
     total_pages: u32,
     zoom_level: f32,
+    is_panel_open: bool,
+    panel_tab: ReaderPanelTab,
+    bookmarks: Vec<BookmarkRecord>,
+    note_input: Entity<InputState>,
     last_activity_at: Instant,
     focus_handle: FocusHandle,
     on_close: Option<Rc<dyn Fn(&mut Window, &mut App) + 'static>>,
 }
 
 impl ReaderView {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let default_book = mock_books().into_iter().next();
         let (current_page, total_pages) = match &default_book {
             Some(b) => (b.current_page.max(1), b.total_pages),
             None => (1, 100),
         };
+        let note_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Nota opcional para esta página...")
+        });
 
         Self {
             book: default_book,
             current_page,
             total_pages,
             zoom_level: 1.0,
+            is_panel_open: false,
+            panel_tab: ReaderPanelTab::Toc,
+            bookmarks: Vec::new(),
+            note_input,
             last_activity_at: Instant::now(),
             focus_handle: cx.focus_handle(),
             on_close: None,
@@ -82,7 +100,113 @@ impl ReaderView {
         self.current_page = book.current_page.max(1).min(self.total_pages);
         self.last_activity_at = Instant::now();
         self.book = Some(book);
+        self.reload_bookmarks();
         cx.notify();
+    }
+
+    fn reload_bookmarks(&mut self) {
+        self.bookmarks.clear();
+        let Some(ref book) = self.book else {
+            return;
+        };
+        if let Some(db_path) = Database::default_db_path() {
+            if let Ok(db) = Database::open(db_path) {
+                if let Ok(list) = BookmarkRepository::list_for_book(db.conn(), &book.id) {
+                    self.bookmarks = list;
+                }
+            }
+        }
+    }
+
+    fn current_chapter_info(&self) -> (u32, String) {
+        let Some(ref book) = self.book else {
+            return (0, String::new());
+        };
+        let paginated = PaginatedBook::from_chapters(book.chapters.clone());
+        let ch_idx = paginated.chapter_index_for_page(self.current_page).unwrap_or(0) as u32;
+        let ch_title = ReaderService::resolve_page(book, self.current_page).chapter_title;
+        (ch_idx, ch_title)
+    }
+
+    pub fn toggle_panel(&mut self, cx: &mut Context<Self>) {
+        self.is_panel_open = !self.is_panel_open;
+        cx.notify();
+    }
+
+    pub fn set_panel_tab(&mut self, tab: ReaderPanelTab, cx: &mut Context<Self>) {
+        self.panel_tab = tab;
+        cx.notify();
+    }
+
+    pub fn toggle_bookmark(&mut self, cx: &mut Context<Self>) {
+        let Some(book_id) = self.book.as_ref().map(|b| b.id.clone()) else {
+            return;
+        };
+        let (ch_idx, ch_title) = self.current_chapter_info();
+        if let Some(db_path) = Database::default_db_path() {
+            if let Ok(db) = Database::open(db_path) {
+                if BookmarkRepository::toggle(
+                    db.conn(),
+                    &book_id,
+                    self.current_page,
+                    ch_idx,
+                    &ch_title,
+                )
+                .is_ok()
+                {
+                    self.reload_bookmarks();
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    pub fn save_bookmark_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(book_id) = self.book.as_ref().map(|b| b.id.clone()) else {
+            return;
+        };
+        let note = self.note_input.read(cx).value().to_string();
+        let (ch_idx, ch_title) = self.current_chapter_info();
+        if let Some(db_path) = Database::default_db_path() {
+            if let Ok(db) = Database::open(db_path) {
+                if BookmarkRepository::save_with_note(
+                    db.conn(),
+                    &book_id,
+                    self.current_page,
+                    ch_idx,
+                    &ch_title,
+                    &note,
+                )
+                .is_ok()
+                {
+                    self.note_input.update(cx, |input, cx| {
+                        input.set_value("", window, cx);
+                    });
+                    self.reload_bookmarks();
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    pub fn delete_bookmark(&mut self, bookmark_id: i64, cx: &mut Context<Self>) {
+        if let Some(db_path) = Database::default_db_path() {
+            if let Ok(db) = Database::open(db_path) {
+                if BookmarkRepository::delete(db.conn(), bookmark_id).is_ok() {
+                    self.reload_bookmarks();
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    pub fn jump_to_page(&mut self, page: u32, cx: &mut Context<Self>) {
+        let target = page.clamp(1, self.total_pages);
+        if target != self.current_page {
+            self.current_page = target;
+            self.persist_progress(0);
+            cx.notify();
+        }
     }
 
     fn persist_progress(&mut self, pages_delta: u32) {
@@ -270,6 +394,12 @@ impl Render for ReaderView {
         let view_zoom_out = cx.entity().clone();
         let view_zoom_in = cx.entity().clone();
         let view_zoom_reset = cx.entity().clone();
+        let view_toggle_panel = cx.entity().clone();
+        let view_toggle_bm = cx.entity().clone();
+        let is_current_bookmarked = self
+            .bookmarks
+            .iter()
+            .any(|b| b.page_number == self.current_page);
 
         div()
             .id("reader-container")
@@ -277,18 +407,37 @@ impl Render for ReaderView {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let key = event.keystroke.key.to_lowercase();
                 let is_ctrl = event.keystroke.modifiers.control || event.keystroke.modifiers.platform;
+                let typing_note = this.note_input.focus_handle(cx).is_focused(window);
 
-                if is_ctrl && (key == "+" || key == "=") {
+                if is_ctrl && key == "d" {
+                    this.toggle_bookmark(cx);
+                } else if is_ctrl && key == "t" {
+                    this.toggle_panel(cx);
+                } else if is_ctrl && (key == "+" || key == "=") {
                     this.zoom_in(cx);
                 } else if is_ctrl && (key == "-" || key == "_") {
                     this.zoom_out(cx);
                 } else if is_ctrl && key == "0" {
                     this.zoom_reset(cx);
                 } else if key == "escape" {
-                    this.close(window, cx);
-                } else if key == "left" || key == "arrowleft" || key == "pageup" || (key == " " && event.keystroke.modifiers.shift) {
+                    if typing_note {
+                        this.focus_handle.focus(window, cx);
+                    } else {
+                        this.close(window, cx);
+                    }
+                } else if !typing_note
+                    && (key == "left"
+                        || key == "arrowleft"
+                        || key == "pageup"
+                        || (key == " " && event.keystroke.modifiers.shift))
+                {
                     this.prev_page(cx);
-                } else if key == "right" || key == "arrowright" || key == "pagedown" || (key == " " && !event.keystroke.modifiers.shift) {
+                } else if !typing_note
+                    && (key == "right"
+                        || key == "arrowright"
+                        || key == "pagedown"
+                        || (key == " " && !event.keystroke.modifiers.shift))
+                {
                     this.next_page(cx);
                 }
             }))
@@ -329,41 +478,87 @@ impl Render for ReaderView {
                     .bg(tokens.bg_elevated)
                     .border_b_1()
                     .border_color(tokens.border.opacity(0.6))
-                    // Lado izquierdo: Botón Volver compacto
+                    // Lado izquierdo: Botón Volver compacto + Índice
                     .child(
                         div()
-                            .id("btn-reader-back")
                             .flex()
                             .flex_row()
                             .items_center()
                             .gap(px(6.0))
-                            .px(px(8.0))
-                            .py(px(3.0))
-                            .rounded(radius)
-                            .cursor_pointer()
-                            .hover(|s| s.bg(tokens.bg_hover))
-                            .on_click(move |_, window, cx| {
-                                view_hud_back.update(cx, |this, cx| {
-                                    this.close(window, cx);
-                                });
-                            })
                             .child(
-                                Icon::new(IconName::ChevronLeft)
-                                    .size(px(14.0))
-                                    .text_color(tokens.accent),
+                                div()
+                                    .id("btn-reader-back")
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .px(px(8.0))
+                                    .py(px(3.0))
+                                    .rounded(radius)
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(tokens.bg_hover))
+                                    .on_click(move |_, window, cx| {
+                                        view_hud_back.update(cx, |this, cx| {
+                                            this.close(window, cx);
+                                        });
+                                    })
+                                    .child(
+                                        Icon::new(IconName::ChevronLeft)
+                                            .size(px(14.0))
+                                            .text_color(tokens.accent),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_medium()
+                                            .text_color(tokens.text)
+                                            .child("Biblioteca"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(tokens.text_muted)
+                                            .child("(Esc)"),
+                                    ),
                             )
                             .child(
                                 div()
-                                    .text_xs()
-                                    .font_medium()
-                                    .text_color(tokens.text)
-                                    .child("Biblioteca"),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(tokens.text_muted)
-                                    .child("(Esc)"),
+                                    .id("btn-reader-toc")
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(5.0))
+                                    .px(px(8.0))
+                                    .py(px(3.0))
+                                    .rounded(radius)
+                                    .cursor_pointer()
+                                    .bg(if self.is_panel_open {
+                                        tokens.bg_hover
+                                    } else {
+                                        gpui_kit::transparent_black()
+                                    })
+                                    .hover(|s| s.bg(tokens.bg_hover))
+                                    .on_click(move |_, _, cx| {
+                                        view_toggle_panel.update(cx, |this, cx| {
+                                            this.toggle_panel(cx);
+                                        });
+                                    })
+                                    .child(
+                                        Icon::new(IconName::List)
+                                            .size(px(13.0))
+                                            .text_color(if self.is_panel_open {
+                                                tokens.accent
+                                            } else {
+                                                tokens.text_muted
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_medium()
+                                            .text_color(tokens.text)
+                                            .child("Índice"),
+                                    ),
                             ),
                     )
                     // Centro: Título y capítulo en una sola línea compacta
@@ -548,6 +743,48 @@ impl Render for ReaderView {
                                             ),
                                     ),
                             )
+                            // Botón Marcador (Ctrl+D)
+                            .child(
+                                div()
+                                    .id("btn-reader-bookmark")
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(4.0))
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded(px(4.0))
+                                    .border_1()
+                                    .border_color(if is_current_bookmarked {
+                                        tokens.accent
+                                    } else {
+                                        tokens.border.opacity(0.6)
+                                    })
+                                    .bg(tokens.bg_sunken)
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(tokens.bg_hover))
+                                    .on_click(move |_, _, cx| {
+                                        view_toggle_bm.update(cx, |this, cx| {
+                                            this.toggle_bookmark(cx);
+                                        });
+                                    })
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(if is_current_bookmarked {
+                                                tokens.accent
+                                            } else {
+                                                tokens.text_muted
+                                            })
+                                            .child(if is_current_bookmarked { "★" } else { "☆" }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.0))
+                                            .text_color(tokens.text_muted)
+                                            .child("Ctrl+D"),
+                                    ),
+                            )
                             // Porcentaje de progreso
                             .child(
                                 div()
@@ -562,18 +799,329 @@ impl Render for ReaderView {
             .child(
                 div()
                     .flex()
+                    .flex_row()
                     .flex_1()
                     .w_full()
                     .h_full()
                     .relative()
                     .overflow_hidden()
+                    // Panel lateral desplegable: Índice (TOC) y Marcadores
+                    .when(self.is_panel_open, |this| {
+                        let view_tab_toc = cx.entity().clone();
+                        let view_tab_bm = cx.entity().clone();
+                        let view_save_note = cx.entity().clone();
+                        let view_jump = cx.entity().clone();
+                        let view_del_bm = cx.entity().clone();
+                        let panel_tab = self.panel_tab;
+                        let current_page = self.current_page;
+                        let bookmarks = self.bookmarks.clone();
+
+                        let mut toc_entries: Vec<(u32, String, bool)> = Vec::new();
+                        if let Some(ref b) = self.book {
+                            let mut offset: u32 = 1;
+                            for (idx, ch) in b.chapters.iter().enumerate() {
+                                let len = (ch.pages.len() as u32).max(1);
+                                let start_page = offset;
+                                let is_active =
+                                    current_page >= start_page && current_page < start_page + len;
+                                let label = if ch.title.trim().is_empty() {
+                                    format!("Sección {}", idx + 1)
+                                } else {
+                                    ch.title.clone()
+                                };
+                                toc_entries.push((start_page, label, is_active));
+                                offset += len;
+                            }
+                        }
+
+                        this.child(
+                            div()
+                                .id("reader-side-panel")
+                                .w(px(280.0))
+                                .h_full()
+                                .flex()
+                                .flex_col()
+                                .bg(tokens.bg_elevated)
+                                .border_r_1()
+                                .border_color(tokens.border)
+                                // Tabs del panel
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .border_b_1()
+                                        .border_color(tokens.border)
+                                        .p(px(6.0))
+                                        .gap(px(6.0))
+                                        .child(
+                                            div()
+                                                .id("tab-panel-toc")
+                                                .flex_1()
+                                                .py(px(6.0))
+                                                .rounded(px(4.0))
+                                                .text_xs()
+                                                .font_semibold()
+                                                .text_center()
+                                                .cursor_pointer()
+                                                .bg(if panel_tab == ReaderPanelTab::Toc {
+                                                    tokens.bg_sunken
+                                                } else {
+                                                    gpui_kit::transparent_black()
+                                                })
+                                                .text_color(if panel_tab == ReaderPanelTab::Toc {
+                                                    tokens.accent
+                                                } else {
+                                                    tokens.text_muted
+                                                })
+                                                .on_click(move |_, _, cx| {
+                                                    view_tab_toc.update(cx, |this, cx| {
+                                                        this.set_panel_tab(ReaderPanelTab::Toc, cx);
+                                                    });
+                                                })
+                                                .child("Índice"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("tab-panel-bookmarks")
+                                                .flex_1()
+                                                .py(px(6.0))
+                                                .rounded(px(4.0))
+                                                .text_xs()
+                                                .font_semibold()
+                                                .text_center()
+                                                .cursor_pointer()
+                                                .bg(if panel_tab == ReaderPanelTab::Bookmarks {
+                                                    tokens.bg_sunken
+                                                } else {
+                                                    gpui_kit::transparent_black()
+                                                })
+                                                .text_color(if panel_tab == ReaderPanelTab::Bookmarks {
+                                                    tokens.accent
+                                                } else {
+                                                    tokens.text_muted
+                                                })
+                                                .on_click(move |_, _, cx| {
+                                                    view_tab_bm.update(cx, |this, cx| {
+                                                        this.set_panel_tab(
+                                                            ReaderPanelTab::Bookmarks,
+                                                            cx,
+                                                        );
+                                                    });
+                                                })
+                                                .child(format!("Marcadores ({})", bookmarks.len())),
+                                        ),
+                                )
+                                // Contenido del panel
+                                .child(
+                                    div()
+                                        .id("reader-panel-scroll")
+                                        .flex_1()
+                                        .overflow_y_scroll()
+                                        .p(px(10.0))
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(6.0))
+                                        .map(|panel| {
+                                            if panel_tab == ReaderPanelTab::Toc {
+                                                panel.children(toc_entries.into_iter().enumerate().map(
+                                                    |(idx, (start_page, label, is_active))| {
+                                                        let view_j = view_jump.clone();
+                                                        div()
+                                                            .id(ElementId::from(format!(
+                                                                "toc-item-{idx}"
+                                                            )))
+                                                            .flex()
+                                                            .flex_row()
+                                                            .items_center()
+                                                            .justify_between()
+                                                            .px(px(10.0))
+                                                            .py(px(7.0))
+                                                            .rounded(px(4.0))
+                                                            .cursor_pointer()
+                                                            .bg(if is_active {
+                                                                tokens.bg_sunken
+                                                            } else {
+                                                                gpui_kit::transparent_black()
+                                                            })
+                                                            .hover(|s| s.bg(tokens.bg_hover))
+                                                            .on_click(move |_, _, cx| {
+                                                                view_j.update(cx, |this, cx| {
+                                                                    this.jump_to_page(start_page, cx);
+                                                                });
+                                                            })
+                                                            .child(
+                                                                div()
+                                                                    .text_xs()
+                                                                    .font_medium()
+                                                                    .text_color(if is_active {
+                                                                        tokens.accent
+                                                                    } else {
+                                                                        tokens.text
+                                                                    })
+                                                                    .overflow_hidden()
+                                                                    .text_ellipsis()
+                                                                    .child(label),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(10.0))
+                                                                    .text_color(tokens.text_muted)
+                                                                    .child(format!("p.{start_page}")),
+                                                            )
+                                                    },
+                                                ))
+                                            } else {
+                                                panel
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .flex_col()
+                                                            .gap(px(6.0))
+                                                            .p(px(8.0))
+                                                            .mb(px(6.0))
+                                                            .rounded(px(6.0))
+                                                            .bg(tokens.bg_sunken)
+                                                            .border_1()
+                                                            .border_color(tokens.border)
+                                                            .child(Input::new(&self.note_input))
+                                                            .child(
+                                                                div()
+                                                                    .id("btn-save-bookmark-note")
+                                                                    .py(px(5.0))
+                                                                    .rounded(px(4.0))
+                                                                    .bg(tokens.accent)
+                                                                    .text_xs()
+                                                                    .font_semibold()
+                                                                    .text_center()
+                                                                    .text_color(tokens.accent_text)
+                                                                    .cursor_pointer()
+                                                                    .hover(|s| s.opacity(0.9))
+                                                                    .on_click(move |_, window, cx| {
+                                                                        view_save_note.update(
+                                                                            cx,
+                                                                            |this, cx| {
+                                                                                this.save_bookmark_note(
+                                                                                    window, cx,
+                                                                                );
+                                                                            },
+                                                                        );
+                                                                    })
+                                                                    .child(format!(
+                                                                        "Guardar marcador en pág. {}",
+                                                                        current_page
+                                                                    )),
+                                                            ),
+                                                    )
+                                                    .children(bookmarks.into_iter().map(|bm| {
+                                                        let view_j = view_jump.clone();
+                                                        let view_d = view_del_bm.clone();
+                                                        let bm_id = bm.id;
+                                                        let bm_page = bm.page_number;
+                                                        div()
+                                                            .id(ElementId::from(format!(
+                                                                "bm-item-{bm_id}"
+                                                            )))
+                                                            .flex()
+                                                            .flex_col()
+                                                            .gap(px(3.0))
+                                                            .p(px(8.0))
+                                                            .rounded(px(6.0))
+                                                            .border_1()
+                                                            .border_color(tokens.border)
+                                                            .bg(tokens.bg)
+                                                            .hover(|s| s.bg(tokens.bg_hover))
+                                                            .cursor_pointer()
+                                                            .on_click(move |_, _, cx| {
+                                                                view_j.update(cx, |this, cx| {
+                                                                    this.jump_to_page(bm_page, cx);
+                                                                });
+                                                            })
+                                                            .child(
+                                                                div()
+                                                                    .flex()
+                                                                    .flex_row()
+                                                                    .items_center()
+                                                                    .justify_between()
+                                                                    .child(
+                                                                        div()
+                                                                            .text_xs()
+                                                                            .font_semibold()
+                                                                            .text_color(tokens.accent)
+                                                                            .child(format!(
+                                                                                "★ Pág. {}",
+                                                                                bm_page
+                                                                            )),
+                                                                    )
+                                                                    .child(
+                                                                        div()
+                                                                            .id(ElementId::from(
+                                                                                format!(
+                                                                                    "bm-del-{bm_id}"
+                                                                                ),
+                                                                            ))
+                                                                            .px(px(4.0))
+                                                                            .text_xs()
+                                                                            .text_color(
+                                                                                tokens.text_muted,
+                                                                            )
+                                                                            .hover(|s| {
+                                                                                s.text_color(
+                                                                                    tokens.text,
+                                                                                )
+                                                                            })
+                                                                            .on_click(move |_, _, cx| {
+                                                                                cx.stop_propagation();
+                                                                                view_d.update(
+                                                                                    cx,
+                                                                                    |this, cx| {
+                                                                                        this.delete_bookmark(
+                                                                                            bm_id,
+                                                                                            cx,
+                                                                                        );
+                                                                                    },
+                                                                                );
+                                                                            })
+                                                                            .child("×"),
+                                                                    ),
+                                                            )
+                                                            .when(
+                                                                !bm.chapter_title.trim().is_empty(),
+                                                                |this| {
+                                                                    this.child(
+                                                                        div()
+                                                                            .text_size(px(10.5))
+                                                                            .text_color(
+                                                                                tokens.text_muted,
+                                                                            )
+                                                                            .child(bm.chapter_title),
+                                                                    )
+                                                                },
+                                                            )
+                                                            .when(
+                                                                !bm.note.trim().is_empty(),
+                                                                |this| {
+                                                                    this.child(
+                                                                        div()
+                                                                            .text_xs()
+                                                                            .text_color(tokens.text)
+                                                                            .child(bm.note),
+                                                                    )
+                                                                },
+                                                            )
+                                                    }))
+                                            }
+                                        }),
+                                ),
+                        )
+                    })
                     // Hoja de Lectura Centrada
                     .child(
                         div()
                             .id("reader-sheet-content")
                             .flex()
                             .flex_col()
-                            .size_full()
+                            .flex_1()
+                            .h_full()
                             .overflow_y_scroll()
                             .pt(px(32.0))
                             .pb(px(56.0))

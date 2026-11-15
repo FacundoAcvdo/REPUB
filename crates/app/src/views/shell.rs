@@ -28,7 +28,7 @@ impl ShellView {
         let library_view = cx.new(|cx| LibraryView::new(window, cx));
         let settings_view = cx.new(|cx| SettingsView::new(window, cx));
         let gallery_view = cx.new(|_| GalleryView::new());
-        let reader_view = cx.new(|cx| ReaderView::new(cx));
+        let reader_view = cx.new(|cx| ReaderView::new(window, cx));
 
         let entity = cx.entity().clone();
 

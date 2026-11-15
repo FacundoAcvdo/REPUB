@@ -1,3 +1,4 @@
+pub mod bookmarks_repo;
 pub mod books_repo;
 pub mod migrations;
 pub mod progress_repo;
@@ -9,6 +10,7 @@ use rusqlite::Connection;
 
 use crate::error::CoreResult;
 
+pub use bookmarks_repo::{BookmarkRecord, BookmarkRepository};
 pub use books_repo::{BookRepository, StoredBook};
 pub use progress_repo::{ProgressRepository, ReadingProgressRecord, ReadingSessionRecord};
 pub use settings_repo::SettingsRepository;
@@ -300,5 +302,36 @@ mod tests {
         BookRepository::upsert(&mut conn, &b, None, None, "es").unwrap();
         let loaded = BookRepository::get_by_id(&conn, "uuid-text-id").unwrap();
         assert!(loaded.is_some());
+    }
+
+    #[test]
+    fn test_bookmarks_crud_and_toggle() {
+        let mut db = Database::open_in_memory().unwrap();
+        let b = sample_book("bm-1", "Rayuela", "Julio Cortázar", 500, 0);
+        BookRepository::upsert(db.conn_mut(), &b, None, None, "es").unwrap();
+
+        assert!(!BookmarkRepository::is_bookmarked(db.conn(), "bm-1", 12).unwrap());
+        assert!(BookmarkRepository::toggle(db.conn(), "bm-1", 12, 1, "Capítulo 2").unwrap());
+        assert!(BookmarkRepository::is_bookmarked(db.conn(), "bm-1", 12).unwrap());
+
+        BookmarkRepository::save_with_note(
+            db.conn(),
+            "bm-1",
+            45,
+            3,
+            "Capítulo 5",
+            "Pasaje importante sobre la Maga",
+        )
+        .unwrap();
+
+        let list = BookmarkRepository::list_for_book(db.conn(), "bm-1").unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].page_number, 12);
+        assert_eq!(list[1].page_number, 45);
+        assert_eq!(list[1].note, "Pasaje importante sobre la Maga");
+
+        // Toggle removes existing bookmark on page 12
+        assert!(!BookmarkRepository::toggle(db.conn(), "bm-1", 12, 1, "Capítulo 2").unwrap());
+        assert_eq!(BookmarkRepository::list_for_book(db.conn(), "bm-1").unwrap().len(), 1);
     }
 }
