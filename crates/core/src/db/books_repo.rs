@@ -197,6 +197,43 @@ impl BookRepository {
         Ok(affected > 0)
     }
 
+    /// Elimina un libro de SQLite y borra su archivo EPUB y portada en disco si existen.
+    pub fn delete_with_files(conn: &Connection, id: &str) -> CoreResult<bool> {
+        let stored = Self::get_by_id(conn, id)?;
+        let deleted = Self::delete(conn, id)?;
+        if deleted {
+            if let Some(s) = stored {
+                if let Some(fp) = s.file_path {
+                    let _ = std::fs::remove_file(fp);
+                }
+                if let Some(cp) = s.cover_path {
+                    let _ = std::fs::remove_file(cp);
+                }
+            }
+        }
+        Ok(deleted)
+    }
+
+    /// Elimina todos los libros de SQLite y sus archivos EPUB/portadas asociados en disco.
+    pub fn delete_all_with_files(conn: &Connection) -> CoreResult<usize> {
+        let mut stmt = conn.prepare("SELECT file_path, cover_path FROM books")?;
+        let paths: Vec<(Option<String>, Option<String>)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(Result::ok)
+            .collect();
+
+        let affected = conn.execute("DELETE FROM books", [])?;
+        for (fp, cp) in paths {
+            if let Some(p) = fp {
+                let _ = std::fs::remove_file(p);
+            }
+            if let Some(p) = cp {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+        Ok(affected)
+    }
+
     /// Devuelve la cantidad total de libros registrados en la biblioteca.
     pub fn count(conn: &Connection) -> CoreResult<u32> {
         let total: i64 = conn.query_row("SELECT COUNT(*) FROM books", [], |row| row.get(0))?;

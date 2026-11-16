@@ -230,4 +230,20 @@ impl ProgressRepository {
         }
         Ok(sessions)
     }
+
+    /// Reinicia todas las estadísticas y sesiones de lectura manteniendo los libros intactos.
+    pub fn clear_all_stats(conn: &Connection) -> CoreResult<()> {
+        conn.execute("DELETE FROM reading_sessions", [])?;
+        conn.execute(
+            "UPDATE reading_progress
+             SET current_page = 0,
+                 current_chapter = 0,
+                 percent = 0.0,
+                 last_read_at = NULL,
+                 reading_time_seconds = 0,
+                 status = 'Unread'",
+            [],
+        )?;
+        Ok(())
+    }
 }

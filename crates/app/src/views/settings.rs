@@ -1,4 +1,4 @@
-use epub_core::db::{Database, SettingsRepository};
+use epub_core::db::{BookRepository, Database, ProgressRepository, SettingsRepository};
 use epub_core::domain::settings::{
     AnimationSpeed, AppSettings, CornerRadiusStyle, EmbeddingSource, LocalEmbeddingModelInfo,
     ReduceMotion,
@@ -58,6 +58,10 @@ pub struct SettingsView {
     is_downloading_model: bool,
     pending_model_switch: Option<(EmbeddingSource, Option<String>)>,
     is_font_select_open: bool,
+    is_delete_data_modal_open: bool,
+    del_opt_books: bool,
+    del_opt_stats: bool,
+    delete_data_status: Option<String>,
     model_input: Entity<InputState>,
     api_key_input: Entity<InputState>,
 }
@@ -111,6 +115,10 @@ impl SettingsView {
             is_downloading_model: false,
             pending_model_switch: None,
             is_font_select_open: false,
+            is_delete_data_modal_open: false,
+            del_opt_books: false,
+            del_opt_stats: false,
+            delete_data_status: None,
             model_input,
             api_key_input,
         }
@@ -122,6 +130,54 @@ impl SettingsView {
                 let _ = SettingsRepository::save_settings(db.conn(), &self.settings);
             }
         }
+    }
+
+    pub fn execute_selected_data_deletion(&mut self, cx: &mut Context<Self>) {
+        if !self.del_opt_books && !self.del_opt_stats {
+            return;
+        }
+
+        let Some(db_path) = Database::default_db_path() else {
+            self.delete_data_status = Some("✗ No se encontró la base de datos local.".into());
+            self.is_delete_data_modal_open = false;
+            cx.notify();
+            return;
+        };
+
+        let Ok(db) = Database::open(db_path) else {
+            self.delete_data_status = Some("✗ No se pudo abrir la base de datos local.".into());
+            self.is_delete_data_modal_open = false;
+            cx.notify();
+            return;
+        };
+
+        let mut deleted_parts = Vec::new();
+        let mut errors = Vec::new();
+
+        if self.del_opt_books {
+            match BookRepository::delete_all_with_files(db.conn()) {
+                Ok(count) => deleted_parts.push(format!("Libros ({count})")),
+                Err(err) => errors.push(format!("Libros: {err}")),
+            }
+        }
+
+        if self.del_opt_stats {
+            match ProgressRepository::clear_all_stats(db.conn()) {
+                Ok(()) => deleted_parts.push("Estadísticas".to_string()),
+                Err(err) => errors.push(format!("Estadísticas: {err}")),
+            }
+        }
+
+        self.is_delete_data_modal_open = false;
+        self.del_opt_books = false;
+        self.del_opt_stats = false;
+
+        self.delete_data_status = if errors.is_empty() {
+            Some(format!("✓ Eliminado correctamente: {}.", deleted_parts.join(", ")))
+        } else {
+            Some(format!("✗ Errores al eliminar: {}", errors.join("; ")))
+        };
+        cx.notify();
     }
 
     fn run_test_connection(&mut self, cx: &mut Context<Self>) {
@@ -343,50 +399,276 @@ impl Render for SettingsView {
             SettingsTab::Sheet => self.render_sheet_tab(tokens, radius, cx),
         };
 
-        div()
-            .id("settings-scroll-container")
-            .flex()
-            .flex_col()
-            .size_full()
-            .overflow_y_scroll()
-            .px(px(32.0))
-            .py(px(24.0))
-            .child(
-                // Centered Column constrained to Sonora's ~640-680px width
+        let modal_overlay = if self.is_delete_data_modal_open {
+            let solid_bg = gpui::Hsla { a: 1.0, ..tokens.bg };
+            let has_selection = self.del_opt_books || self.del_opt_stats;
+
+            let make_option = |id: &'static str,
+                               label: &'static str,
+                               desc: &'static str,
+                               checked: bool,
+                               toggle: fn(&mut SettingsView)| {
                 div()
+                    .id(id)
+                    .p(px(12.0))
+                    .rounded(radius)
+                    .border_1()
+                    .border_color(if checked { tokens.accent } else { tokens.border })
+                    .bg(if checked {
+                        tokens.accent.opacity(0.08)
+                    } else {
+                        tokens.bg_elevated
+                    })
+                    .cursor_pointer()
+                    .hover(|s| s.bg(tokens.bg_hover))
                     .flex()
-                    .flex_col()
-                    .items_center()
-                    .w_full()
-                    .max_w(px(660.0))
-                    .mx_auto()
-                    .gap(px(24.0))
-                    // Header
+                    .flex_row()
+                    .items_start()
+                    .gap(px(12.0))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        toggle(this);
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .mt(px(2.0))
+                            .w(px(18.0))
+                            .h(px(18.0))
+                            .flex_shrink_0()
+                            .rounded(px(4.0))
+                            .border_1()
+                            .border_color(if checked { tokens.accent } else { tokens.border })
+                            .bg(if checked {
+                                tokens.accent
+                            } else {
+                                gpui::transparent_black()
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(checked, |el| {
+                                el.child(
+                                    Icon::new(IconName::Check)
+                                        .size(px(12.0))
+                                        .text_color(tokens.bg),
+                                )
+                            }),
+                    )
                     .child(
                         div()
                             .flex()
                             .flex_col()
-                            .items_center()
-                            .gap(px(6.0))
+                            .gap(px(2.0))
+                            .flex_1()
+                            .min_w(px(0.0))
                             .child(
                                 div()
-                                    .text_2xl()
-                                    .font_bold()
+                                    .w_full()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(tokens.text)
-                                    .child("Ajustes"),
+                                    .child(label),
                             )
                             .child(
                                 div()
-                                    .text_sm()
+                                    .w_full()
+                                    .text_xs()
                                     .text_color(tokens.text_muted)
-                                    .child("Personaliza tu experiencia de lectura, interfaz y modelos."),
+                                    .child(desc),
                             ),
                     )
-                    // Nav Bar
-                    .child(nav_bar)
-                    // Active Tab Section
-                    .child(tab_content),
+            };
+
+            Some(
+                div()
+                    .id("delete-data-modal-backdrop")
+                    .absolute()
+                    .inset_0()
+                    .bg(gpui::black().opacity(0.55))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                        this.is_delete_data_modal_open = false;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .id("delete-data-modal-card")
+                            .w(px(460.0))
+                            .rounded(px(12.0))
+                            .bg(solid_bg)
+                            .shadow_lg()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            .child(
+                                div()
+                                    .p(px(22.0))
+                                    .rounded(px(12.0))
+                                    .border_1()
+                                    .border_color(tokens.border)
+                                    .bg(tokens.bg_elevated)
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(16.0))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(10.0))
+                                            .child(
+                                                Icon::new(IconName::Trash)
+                                                    .size(px(18.0))
+                                                    .text_color(tokens.danger),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_base()
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .text_color(tokens.text)
+                                                    .child("Eliminar datos locales"),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(tokens.text_muted)
+                                            .child("Selecciona una o más categorías para borrar permanentemente:"),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(8.0))
+                                            .child(make_option(
+                                                "del-opt-books",
+                                                "Libros",
+                                                "Elimina todos los libros importados, portadas, anotaciones y archivos EPUB guardados.",
+                                                self.del_opt_books,
+                                                |this| this.del_opt_books = !this.del_opt_books,
+                                            ))
+                                            .child(make_option(
+                                                "del-opt-stats",
+                                                "Estadísticas",
+                                                "Reinicia el progreso de lectura, páginas leídas y sesiones de lectura registradas.",
+                                                self.del_opt_stats,
+                                                |this| this.del_opt_stats = !this.del_opt_stats,
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .justify_end()
+                                            .gap(px(10.0))
+                                            .pt(px(4.0))
+                                            .child(
+                                                div()
+                                                    .id("del-modal-cancel")
+                                                    .px(px(14.0))
+                                                    .py(px(8.0))
+                                                    .rounded(radius)
+                                                    .border_1()
+                                                    .border_color(tokens.border)
+                                                    .bg(tokens.bg_elevated)
+                                                    .hover(|s| s.bg(tokens.bg_hover))
+                                                    .cursor_pointer()
+                                                    .text_sm()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(tokens.text)
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.is_delete_data_modal_open = false;
+                                                        cx.notify();
+                                                    }))
+                                                    .child("Cancelar"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("del-modal-confirm")
+                                                    .px(px(14.0))
+                                                    .py(px(8.0))
+                                                    .rounded(radius)
+                                                    .bg(if has_selection {
+                                                        tokens.danger
+                                                    } else {
+                                                        tokens.border
+                                                    })
+                                                    .when(has_selection, |el| {
+                                                        el.cursor_pointer()
+                                                            .hover(|s| s.opacity(0.9))
+                                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                                this.execute_selected_data_deletion(cx);
+                                                            }))
+                                                    })
+                                                    .text_sm()
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(if has_selection {
+                                                        tokens.bg
+                                                    } else {
+                                                        tokens.text_muted
+                                                    })
+                                                    .child("Eliminar seleccionados"),
+                                            ),
+                                    ),
+                            ),
+                    ),
             )
+        } else {
+            None
+        };
+
+        div()
+            .relative()
+            .size_full()
+            .child(
+                div()
+                    .id("settings-scroll-container")
+                    .flex()
+                    .flex_col()
+                    .size_full()
+                    .overflow_y_scroll()
+                    .px(px(32.0))
+                    .py(px(24.0))
+                    .child(
+                        // Centered Column constrained to Sonora's ~640-680px width
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .w_full()
+                            .max_w(px(660.0))
+                            .mx_auto()
+                            .gap(px(24.0))
+                            // Header
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .child(
+                                        div()
+                                            .text_2xl()
+                                            .font_bold()
+                                            .text_color(tokens.text)
+                                            .child("Ajustes"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(tokens.text_muted)
+                                            .child("Personaliza tu experiencia de lectura, interfaz y modelos."),
+                                    ),
+                            )
+                            // Nav Bar
+                            .child(nav_bar)
+                            // Active Tab Section
+                            .child(tab_content),
+                    ),
+            )
+            .children(modal_overlay)
     }
 }
 
@@ -540,6 +822,58 @@ impl SettingsView {
                         )
                         .description("Preferencia de duración para transiciones e interfaces (Lenta: 250ms, Estándar: 150ms, Rápida: 80ms)."),
                     ),
+            )
+            .child(
+                SettingsSection::new("local-data-section", "Gestión de datos locales", tokens, radius)
+                    .child(
+                        SettingRow::new(
+                            "delete-data-row",
+                            "Eliminar datos",
+                            tokens,
+                            div()
+                                .id("open-delete-data-modal")
+                                .px(px(14.0))
+                                .py(px(7.0))
+                                .rounded(radius)
+                                .border_1()
+                                .border_color(tokens.danger.opacity(0.6))
+                                .bg(tokens.danger.opacity(0.1))
+                                .hover(|s| s.bg(tokens.danger.opacity(0.18)))
+                                .cursor_pointer()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.0))
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(tokens.danger)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.is_delete_data_modal_open = true;
+                                    cx.notify();
+                                }))
+                                .child(
+                                    Icon::new(IconName::Trash)
+                                        .size(px(14.0))
+                                        .text_color(tokens.danger),
+                                )
+                                .child("Eliminar datos..."),
+                        )
+                        .description("Abre un selector múltiple para elegir qué categorías borrar (libros o estadísticas)."),
+                    )
+                    .when_some(self.delete_data_status.clone(), |el, msg| {
+                        el.child(
+                            div()
+                                .px(px(12.0))
+                                .py(px(8.0))
+                                .rounded(radius)
+                                .bg(tokens.bg_elevated)
+                                .border_1()
+                                .border_color(tokens.border)
+                                .text_xs()
+                                .text_color(tokens.text_muted)
+                                .child(msg),
+                        )
+                    }),
             )
             .into_any_element()
     }

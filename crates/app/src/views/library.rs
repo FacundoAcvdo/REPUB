@@ -33,6 +33,7 @@ pub struct LibraryView {
     grid_scroll_handle: UniformListScrollHandle,
     list_scroll_handle: UniformListScrollHandle,
     on_open_book: Option<Rc<dyn Fn(Book, &mut Window, &mut App) + 'static>>,
+    context_menu: Option<(Book, Point<Pixels>)>,
 }
 
 impl LibraryView {
@@ -63,6 +64,7 @@ impl LibraryView {
             grid_scroll_handle: UniformListScrollHandle::new(),
             list_scroll_handle: UniformListScrollHandle::new(),
             on_open_book: None,
+            context_menu: None,
         };
         this.load_from_sqlite();
         this
@@ -70,6 +72,39 @@ impl LibraryView {
 
     fn open_default_db() -> Option<Database> {
         Database::default_db_path().and_then(|path| Database::open(path).ok())
+    }
+
+    pub fn open_context_menu(&mut self, book: Book, pos: Point<Pixels>, cx: &mut Context<Self>) {
+        self.context_menu = Some((book, pos));
+        cx.notify();
+    }
+
+    pub fn close_context_menu(&mut self, cx: &mut Context<Self>) {
+        if self.context_menu.is_some() {
+            self.context_menu = None;
+            cx.notify();
+        }
+    }
+
+    pub fn delete_book(&mut self, book_id: &str, cx: &mut Context<Self>) {
+        self.context_menu = None;
+        if let Some(db) = Self::open_default_db() {
+            match BookRepository::delete_with_files(db.conn(), book_id) {
+                Ok(true) => {
+                    self.notification = Some("Libro eliminado de la biblioteca.".to_string());
+                    self.load_from_sqlite();
+                }
+                Ok(false) => {
+                    self.notification = Some("No se encontró el libro a eliminar.".to_string());
+                }
+                Err(err) => {
+                    self.notification = Some(format!("Error al eliminar libro: {err}"));
+                }
+            }
+        } else {
+            self.notification = Some("No se pudo abrir la base de datos local.".to_string());
+        }
+        cx.notify();
     }
 
     fn load_from_sqlite(&mut self) {
@@ -486,9 +521,11 @@ impl Render for LibraryView {
                             .pb(px(20.0))
                             .children(row_books.iter().map(|book| {
                                 let book_for_click = book.clone();
+                                let book_for_ctx = book.clone();
                                 let cb = on_open_book_row.clone();
                                 let meta = meta_row.get(&book.id).cloned().unwrap_or_default();
                                 let view_fav_card = view_fav_row.clone();
+                                let view_ctx_card = view_fav_row.clone();
                                 BookCard::new(
                                     ElementId::from(book.id.clone()),
                                     book.clone(),
@@ -505,6 +542,11 @@ impl Render for LibraryView {
                                 .on_toggle_favorite(move |id, _, cx| {
                                     view_fav_card.update(cx, |this, cx| {
                                         this.toggle_favorite(id, cx);
+                                    });
+                                })
+                                .on_right_click(move |_, pos, _, cx| {
+                                    view_ctx_card.update(cx, |this, cx| {
+                                        this.open_context_menu(book_for_ctx.clone(), pos, cx);
                                     });
                                 })
                             }));
@@ -533,9 +575,11 @@ impl Render for LibraryView {
                     for idx in range {
                         if let Some(book) = books_rc.get(idx) {
                             let book_for_click = book.clone();
+                            let book_for_ctx = book.clone();
                             let cb = on_open_book.clone();
                             let meta = meta_rc.get(&book.id).cloned().unwrap_or_default();
                             let view_fav_row = view_fav.clone();
+                            let view_ctx_row = view_fav.clone();
                             let row_element = div()
                                 .id(ElementId::from(format!("book-list-row-{}", idx)))
                                 .h(px(76.0))
@@ -558,6 +602,11 @@ impl Render for LibraryView {
                                         view_fav_row.update(cx, |this, cx| {
                                             this.toggle_favorite(id, cx);
                                         });
+                                    })
+                                    .on_right_click(move |_, pos, _, cx| {
+                                        view_ctx_row.update(cx, |this, cx| {
+                                            this.open_context_menu(book_for_ctx.clone(), pos, cx);
+                                        });
                                     }),
                                 );
                             rows.push(row_element);
@@ -572,7 +621,114 @@ impl Render for LibraryView {
             .into_any_element()
         };
 
+        let context_menu_overlay = self.context_menu.clone().map(|(book, pos)| {
+            let solid_bg = gpui::Hsla { a: 1.0, ..tokens.bg };
+            let open_cb = self.on_open_book.clone();
+            let book_for_open = book.clone();
+            let book_id_for_del = book.id.clone();
+
+            div()
+                .id("library-ctx-backdrop")
+                .absolute()
+                .inset_0()
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                    this.close_context_menu(cx);
+                }))
+                .on_mouse_down(MouseButton::Right, cx.listener(|this, _, _, cx| {
+                    this.close_context_menu(cx);
+                }))
+                .child(
+                    anchored()
+                        .position(pos)
+                        .child(
+                            div()
+                                .id("library-ctx-menu")
+                                .w(px(210.0))
+                                .rounded(px(8.0))
+                                .bg(solid_bg)
+                                .shadow_lg()
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .child(
+                                    div()
+                                        .p(px(6.0))
+                                        .rounded(px(8.0))
+                                        .border_1()
+                                        .border_color(tokens.border)
+                                        .bg(tokens.bg_elevated)
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.0))
+                                        .child(
+                                            div()
+                                                .px(px(8.0))
+                                                .py(px(4.0))
+                                                .text_xs()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(tokens.text_muted)
+                                                .truncate()
+                                                .child(book.title.clone()),
+                                        )
+                                        .child(div().h(px(1.0)).w_full().bg(tokens.border).my(px(2.0)))
+                                        .child(
+                                            div()
+                                                .id("ctx-open-book")
+                                                .px(px(8.0))
+                                                .py(px(6.0))
+                                                .rounded(px(5.0))
+                                                .cursor_pointer()
+                                                .hover(|s| s.bg(tokens.bg_hover))
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .gap(px(8.0))
+                                                .text_sm()
+                                                .text_color(tokens.text)
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    this.close_context_menu(cx);
+                                                    if let Some(ref handler) = open_cb {
+                                                        handler(book_for_open.clone(), window, cx);
+                                                    }
+                                                }))
+                                                .child(
+                                                    Icon::new(IconName::BookOpen)
+                                                        .size(px(14.0))
+                                                        .text_color(tokens.text_muted),
+                                                )
+                                                .child("Abrir libro"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("ctx-delete-book")
+                                                .px(px(8.0))
+                                                .py(px(6.0))
+                                                .rounded(px(5.0))
+                                                .cursor_pointer()
+                                                .hover(|s| s.bg(tokens.danger.opacity(0.12)))
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
+                                                .gap(px(8.0))
+                                                .text_sm()
+                                                .text_color(tokens.danger)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.delete_book(&book_id_for_del, cx);
+                                                }))
+                                                .child(
+                                                    Icon::new(IconName::Trash)
+                                                        .size(px(14.0))
+                                                        .text_color(tokens.danger),
+                                                )
+                                                .child("Eliminar libro"),
+                                        ),
+                                ),
+                        ),
+                )
+        });
+
         div()
+            .relative()
             .flex()
             .flex_col()
             .size_full()
@@ -583,5 +739,6 @@ impl Render for LibraryView {
             .child(toolbar)
             .children(notification_element)
             .child(content_element)
+            .children(context_menu_overlay)
     }
 }

@@ -53,6 +53,7 @@ pub struct BookCard {
     is_favorite: bool,
     on_click: Option<Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>>,
     on_toggle_favorite: Option<Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>>,
+    on_right_click: Option<Rc<dyn Fn(&str, Point<Pixels>, &mut Window, &mut App) + 'static>>,
 }
 
 impl BookCard {
@@ -71,6 +72,7 @@ impl BookCard {
             is_favorite: false,
             on_click: None,
             on_toggle_favorite: None,
+            on_right_click: None,
         }
     }
 
@@ -99,6 +101,14 @@ impl BookCard {
         self.on_toggle_favorite = Some(Rc::new(handler));
         self
     }
+
+    pub fn on_right_click(
+        mut self,
+        handler: impl Fn(&str, Point<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_right_click = Some(Rc::new(handler));
+        self
+    }
 }
 
 impl RenderOnce for BookCard {
@@ -109,6 +119,7 @@ impl RenderOnce for BookCard {
         let book_id = book.id.clone();
         let on_click = self.on_click;
         let on_toggle_favorite = self.on_toggle_favorite;
+        let on_right_click = self.on_right_click;
         let is_favorite = self.is_favorite;
         let real_cover = self
             .cover_path
@@ -133,6 +144,13 @@ impl RenderOnce for BookCard {
             .when_some(on_click, |this, handler| {
                 let id = book_id.clone();
                 this.on_click(move |_, window, cx| handler(&id, window, cx))
+            })
+            .when_some(on_right_click, |this, handler| {
+                let id = book_id.clone();
+                this.on_mouse_down(MouseButton::Right, move |event: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    handler(&id, event.position, window, cx);
+                })
             })
             // 2:3 Cover Container
             .child(
@@ -366,6 +384,7 @@ pub struct BookRow {
     is_favorite: bool,
     on_click: Option<Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>>,
     on_toggle_favorite: Option<Rc<dyn Fn(&str, &mut Window, &mut App) + 'static>>,
+    on_right_click: Option<Rc<dyn Fn(&str, Point<Pixels>, &mut Window, &mut App) + 'static>>,
 }
 
 impl BookRow {
@@ -384,6 +403,7 @@ impl BookRow {
             is_favorite: false,
             on_click: None,
             on_toggle_favorite: None,
+            on_right_click: None,
         }
     }
 
@@ -412,6 +432,14 @@ impl BookRow {
         self.on_toggle_favorite = Some(Rc::new(handler));
         self
     }
+
+    pub fn on_right_click(
+        mut self,
+        handler: impl Fn(&str, Point<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_right_click = Some(Rc::new(handler));
+        self
+    }
 }
 
 impl RenderOnce for BookRow {
@@ -422,6 +450,7 @@ impl RenderOnce for BookRow {
         let book_id = book.id.clone();
         let on_click = self.on_click;
         let on_toggle_favorite = self.on_toggle_favorite;
+        let on_right_click = self.on_right_click;
         let is_favorite = self.is_favorite;
         let real_cover = self
             .cover_path
@@ -450,6 +479,13 @@ impl RenderOnce for BookRow {
             .when_some(on_click, |this, handler| {
                 let id = book_id.clone();
                 this.on_click(move |_, window, cx| handler(&id, window, cx))
+            })
+            .when_some(on_right_click, |this, handler| {
+                let id = book_id.clone();
+                this.on_mouse_down(MouseButton::Right, move |event: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    handler(&id, event.position, window, cx);
+                })
             })
             // Left: Thumbnail + Title + Author
             .child(
