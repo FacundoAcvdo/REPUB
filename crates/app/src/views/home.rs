@@ -2,7 +2,6 @@ use std::rc::Rc;
 use epub_core::db::{BookRepository, Database};
 use epub_core::domain::book::Book;
 use epub_core::domain::stats::ReadingStats;
-use epub_core::mock::books::mock_books;
 use epub_core::services::StatsService;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::StyledExt as _;
@@ -17,7 +16,7 @@ use crate::theme::state::ThemeState;
 
 pub struct HomeView {
     stats: ReadingStats,
-    current_book: Book,
+    current_book: Option<Book>,
     current_cover_path: Option<String>,
     notification: Option<String>,
     on_open_book: Option<Rc<dyn Fn(Book, &mut Window, &mut App) + 'static>>,
@@ -44,8 +43,7 @@ impl HomeView {
         cx.notify();
     }
 
-    fn load_from_db() -> (ReadingStats, Book, Option<String>) {
-        let fallback_book = mock_books().into_iter().next().unwrap();
+    fn load_from_db() -> (ReadingStats, Option<Book>, Option<String>) {
         let today = StatsService::today_iso();
 
         if let Some(db_path) = Database::default_db_path() {
@@ -61,12 +59,13 @@ impl HomeView {
                     });
                     let book = StatsService::get_continue_reading_book(db.conn())
                         .ok()
-                        .flatten()
-                        .unwrap_or(fallback_book);
-                    let cover_path = BookRepository::get_by_id(db.conn(), &book.id)
-                        .ok()
-                        .flatten()
-                        .and_then(|s| s.cover_path);
+                        .flatten();
+                    let cover_path = book.as_ref().and_then(|b| {
+                        BookRepository::get_by_id(db.conn(), &b.id)
+                            .ok()
+                            .flatten()
+                            .and_then(|s| s.cover_path)
+                    });
                     return (stats, book, cover_path);
                 }
             }
@@ -81,7 +80,7 @@ impl HomeView {
                 current_streak_days: 0,
                 weekly_activity: [0; 7],
             },
-            fallback_book,
+            None,
             None,
         )
     }
@@ -235,20 +234,59 @@ impl Render for HomeView {
                             .gap(px(10.0))
                             .w_full()
                             .child({
-                                let book_to_read = self.current_book.clone();
-                                let on_open_book = self.on_open_book.clone();
-                                ContinueReadingCard::new(
-                                    "card-continue-reading",
-                                    self.current_book.clone(),
-                                    tokens,
-                                    radius,
-                                )
-                                .cover_path(self.current_cover_path.clone())
-                                .on_read(move |window, cx| {
-                                    if let Some(ref handler) = on_open_book {
-                                        handler(book_to_read.clone(), window, cx);
-                                    }
-                                })
+                                if let Some(book_to_read) = self.current_book.clone() {
+                                    let on_open_book = self.on_open_book.clone();
+                                    ContinueReadingCard::new(
+                                        "card-continue-reading",
+                                        book_to_read.clone(),
+                                        tokens,
+                                        radius,
+                                    )
+                                    .cover_path(self.current_cover_path.clone())
+                                    .on_read(move |window, cx| {
+                                        if let Some(ref handler) = on_open_book {
+                                            handler(book_to_read.clone(), window, cx);
+                                        }
+                                    })
+                                    .into_any_element()
+                                } else {
+                                    div()
+                                        .w_full()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(14.0))
+                                        .p(px(20.0))
+                                        .rounded(radius)
+                                        .bg(tokens.bg_elevated)
+                                        .border_1()
+                                        .border_color(tokens.border)
+                                        .child(
+                                            Icon::new(IconName::BookOpen)
+                                                .size(px(24.0))
+                                                .text_color(tokens.accent),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(3.0))
+                                                .child(
+                                                    div()
+                                                        .text_sm()
+                                                        .font_semibold()
+                                                        .text_color(tokens.text)
+                                                        .child("Tu biblioteca está vacía"),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(tokens.text_muted)
+                                                        .child("Andá a Biblioteca e importá tu primer archivo .epub para empezar a leer."),
+                                                ),
+                                        )
+                                        .into_any_element()
+                                }
                             }),
                     )
                     // Section 2: Estadísticas Generales (4-card Grid)

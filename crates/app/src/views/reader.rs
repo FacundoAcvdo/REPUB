@@ -6,7 +6,6 @@ use epub_core::db::{
 };
 use epub_core::domain::book::Book;
 use epub_core::epub::{PaginatedBook, PaginationConfig};
-use epub_core::mock::books::mock_books;
 use epub_core::services::{AssistantAnswer, RagService, ReaderService};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::StyledExt as _;
@@ -64,11 +63,8 @@ pub struct ReaderView {
 
 impl ReaderView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let default_book = mock_books().into_iter().next();
-        let (current_page, total_pages) = match &default_book {
-            Some(b) => (b.current_page.max(1), b.total_pages),
-            None => (1, 100),
-        };
+        let default_book: Option<Book> = None;
+        let (current_page, total_pages) = (1, 1);
         let note_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Nota opcional para esta página...")
         });
