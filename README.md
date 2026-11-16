@@ -29,6 +29,27 @@
 
 ---
 
+## Vistas
+
+### Inicio y Biblioteca
+<p align="center">
+  <img src="assets/Inicio.png" alt="Inicio — Continuar leyendo y estadísticas" width="49%" />
+  <img src="assets/Biblioteca.png" alt="Biblioteca — Catálogo EPUB y filtros" width="49%" />
+</p>
+
+### Temas: modo transparente y modo totalmente sólido
+<p align="center">
+  <img src="assets/Temas_1.png" alt="Temas — Interfaz transparente/translúcida" width="49%" />
+  <img src="assets/Temas_2.png" alt="Temas — Interfaz totalmente sólida" width="49%" />
+</p>
+
+### Ajustes
+<p align="center">
+  <img src="assets/Ajustes.png" alt="Ajustes — Configuración de IA y motor de embeddings" width="80%" />
+</p>
+
+---
+
 ## Atajos de teclado
 
 | Atajo | Acción |

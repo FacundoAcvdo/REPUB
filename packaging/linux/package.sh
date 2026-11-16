@@ -30,6 +30,7 @@ mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/icons/hicolor/512x512/apps" "$APPD
 cp "$ROOT_DIR/target/release/repub" "$APPDIR/usr/bin/repub"
 find "$ROOT_DIR/target/release" -maxdepth 1 -name "*.so*" -exec cp {} "$APPDIR/usr/bin/" \; || true
 cp "$ROOT_DIR/assets/app_icon.png" "$APPDIR/repub.png"
+cp "$ROOT_DIR/assets/app_icon.png" "$APPDIR/.DirIcon"
 cp "$ROOT_DIR/assets/app_icon.png" "$APPDIR/usr/share/icons/hicolor/512x512/apps/repub.png"
 cp "$ROOT_DIR/assets/repub.desktop" "$APPDIR/repub.desktop"
 cp "$ROOT_DIR/assets/repub.desktop" "$APPDIR/usr/share/applications/repub.desktop"
